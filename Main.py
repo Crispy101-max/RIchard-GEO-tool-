@@ -1,12 +1,14 @@
+import os
+import json
+import re
+from typing import Any, Dict, List
+from urllib.parse import urlparse
+
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
-from google import genai
-import requests
-import re
-import json
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-from typing import Dict, Any, List
+from google import genai
 
 # ============================================================
 # PAGE CONFIG
@@ -18,22 +20,56 @@ st.set_page_config(
 )
 
 # ============================================================
-# API CLIENT
-# ============================================================
-client = genai.Client(api_key=st.secrets["API_Key"])
-
-# ============================================================
 # CONSTANTS
 # ============================================================
-HEX_PATTERN = re.compile(r'#[0-9a-fA-F]{3,8}\b')
+HEX_PATTERN = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 
 DEFAULT_PALETTE = {
     "background": "#0f172a",
     "surface": "#1e293b",
     "accent": "#6366f1",
     "text": "#e2e8f0",
-    "muted": "#94a3b8"
+    "muted": "#94a3b8",
 }
+
+# ============================================================
+# API KEY / CLIENT
+# ============================================================
+def get_api_key() -> str:
+    """
+    Loads API key in this order:
+    1) Streamlit secrets: st.secrets["API_Key"]
+    2) Environment variable: API_Key
+    3) Environment variable: GEMINI_API_KEY
+    """
+    try:
+        if "API_Key" in st.secrets:
+            return st.secrets["API_Key"]
+    except Exception:
+        pass
+
+    if os.getenv("API_Key"):
+        return os.getenv("API_Key", "")
+
+    if os.getenv("GEMINI_API_KEY"):
+        return os.getenv("GEMINI_API_KEY", "")
+
+    return ""
+
+
+API_KEY = get_api_key()
+
+if not API_KEY:
+    st.error(
+        "No Gemini API key found.\n\n"
+        "Please add it in one of these ways:\n"
+        "1. Streamlit secrets as `API_Key`\n"
+        "2. Environment variable `API_Key`\n"
+        "3. Environment variable `GEMINI_API_KEY`"
+    )
+    st.stop()
+
+client = genai.Client(api_key=API_KEY)
 
 # ============================================================
 # HELPERS
@@ -61,9 +97,9 @@ def extract_hex_colours(css_text: str, inline_styles: List[str]) -> List[str]:
     for c in colours:
         c = c.lower()
 
-        # Expand shorthand hex e.g. #abc -> #aabbcc
+        # Expand shorthand hex: #abc -> #aabbcc
         if len(c) == 4:
-            c = "#" + "".join([ch * 2 for ch in c[1:]])
+            c = "#" + "".join(ch * 2 for ch in c[1:])
 
         if c not in seen:
             seen.add(c)
@@ -73,13 +109,6 @@ def extract_hex_colours(css_text: str, inline_styles: List[str]) -> List[str]:
 
 
 def infer_palette(colours: List[str]) -> Dict[str, str]:
-    """
-    Tries to build a usable palette from extracted colours.
-    Falls back to default palette if needed.
-    """
-    if not colours:
-        return DEFAULT_PALETTE.copy()
-
     palette = DEFAULT_PALETTE.copy()
 
     if len(colours) >= 1:
@@ -110,7 +139,7 @@ def extract_website_data(url: str) -> Dict[str, Any]:
     if meta_tag and meta_tag.get("content"):
         meta_description = meta_tag["content"].strip()
 
-    # Save CSS / inline styles before removing things
+    # Save CSS / inline styles before removing elements
     style_tags = soup.find_all("style")
     css_text = "\n".join([s.get_text(" ", strip=True) for s in style_tags])
 
@@ -122,19 +151,18 @@ def extract_website_data(url: str) -> Dict[str, Any]:
 
     colours = extract_hex_colours(css_text, inline_styles)
 
-    # Headings for structure clues
     headings = []
     for h in soup.find_all(["h1", "h2", "h3"]):
         txt = clean_whitespace(h.get_text(" ", strip=True))
         if txt:
             headings.append(txt)
 
-    # Remove non-content areas for text extraction
+    # Remove obvious non-content elements
     for element in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
         element.decompose()
 
     page_text = clean_whitespace(soup.get_text(separator=" ", strip=True))
-    page_text = page_text[:25000]  # avoid excessive token use
+    page_text = page_text[:25000]  # avoid excessive token usage
 
     return {
         "url": url,
@@ -153,18 +181,16 @@ def extract_website_data(url: str) -> Dict[str, Any]:
 def parse_json_from_model(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
 
-    # Remove markdown code fences if present
+    # Remove code fences if model returns markdown
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    # Try direct parse
     try:
         return json.loads(cleaned)
     except Exception:
         pass
 
-    # Fallback: extract substring from first { to last }
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -189,39 +215,36 @@ def html_looks_valid(html_raw: str) -> bool:
     return lowered.startswith("<!doctype html") or lowered.startswith("<html")
 
 
-def render_data_needed_boxes_in_fallback(text: str) -> str:
+def replace_data_needed_boxes(text: str) -> str:
     """
-    Converts [DATA NEEDED: ...] into styled placeholder blocks for fallback HTML.
+    Turns [DATA NEEDED: ...] into styled HTML boxes for fallback rendering.
     """
     pattern = r"\[DATA NEEDED:(.*?)\]"
 
     def repl(match):
         content = match.group(1).strip()
-        return f"""
-        <div class="data-needed">
-            <strong>DATA NEEDED</strong><br>
-            {content}
-        </div>
-        """
+        return (
+            '<div class="data-needed">'
+            "<strong>DATA NEEDED</strong><br>"
+            f"{content}"
+            "</div>"
+        )
 
     return re.sub(pattern, repl, text)
 
 
 def markdownish_to_basic_html(text: str) -> str:
     """
-    Very lightweight converter for fallback rendering if AI fails to return valid HTML.
-    Not perfect, but enough to visualise content.
+    Very lightweight converter for fallback rendering if model fails to return HTML.
     """
     safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    safe = render_data_needed_boxes_in_fallback(safe)
+    safe = replace_data_needed_boxes(safe)
 
     lines = safe.split("\n")
     html_parts = []
 
     for line in lines:
         stripped = line.strip()
-
         if not stripped:
             continue
 
@@ -236,9 +259,9 @@ def markdownish_to_basic_html(text: str) -> str:
         else:
             html_parts.append(f"<p>{stripped}</p>")
 
-    # Wrap orphan list items in <ul>
     final_parts = []
     in_list = False
+
     for part in html_parts:
         if part.startswith("<li>"):
             if not in_list:
@@ -250,6 +273,7 @@ def markdownish_to_basic_html(text: str) -> str:
                 final_parts.append("</ul>")
                 in_list = False
             final_parts.append(part)
+
     if in_list:
         final_parts.append("</ul>")
 
@@ -260,7 +284,7 @@ def build_fallback_html(
     brand_name: str,
     title: str,
     rewritten_content: str,
-    palette: Dict[str, str]
+    palette: Dict[str, str],
 ) -> str:
     content_html = markdownish_to_basic_html(rewritten_content)
 
@@ -450,12 +474,12 @@ def build_fallback_html(
         <div class="eyebrow">Visualised from your original site</div>
         <h1>{title}</h1>
         <p>This is a fallback visual mockup generated because the AI did not return fully valid HTML. Your rewritten GEO content is still visualised below.</p>
-        <a href="#" class="cta">Request Missing Data</a>
+        <a class="cta" href="#content">View Rewritten Content</a>
       </div>
     </div>
   </header>
 
-  <main class="section">
+  <main class="section" id="content">
     <div class="container">
       <div class="content-card">
         {content_html}
@@ -469,8 +493,7 @@ def build_fallback_html(
     </div>
   </footer>
 </body>
-</html>
-"""
+</html>"""
 
 
 def add_usage_to_session(response: Any):
@@ -482,11 +505,10 @@ def add_usage_to_session(response: Any):
         st.session_state.total_input_tokens += prompt_tokens
         st.session_state.total_output_tokens += output_tokens
 
-        # Your original Gemini 2.5 Pro pricing
+        # Using your original pricing assumptions
         st.session_state.total_cost += (
             (prompt_tokens / 1_000_000) * 1.25
-        ) + (
-            (output_tokens / 1_000_000) * 10.00
+            + (output_tokens / 1_000_000) * 10.00
         )
     except Exception:
         pass
@@ -495,15 +517,8 @@ def add_usage_to_session(response: Any):
 def call_gemini(user_text: str, system_instruction: str):
     response = client.models.generate_content(
         model="gemini-2.5-pro",
-        config={
-            "system_instruction": system_instruction
-        },
-        contents=[
-            {
-                "role": "user",
-                "parts": [{"text": user_text}]
-            }
-        ]
+        config={"system_instruction": system_instruction},
+        contents=[{"role": "user", "parts": [{"text": user_text}]}],
     )
     return response
 
@@ -518,7 +533,7 @@ if "scores" not in st.session_state:
     st.session_state.scores = {
         "AI_Readability": "0",
         "Fact_Density": "0",
-        "Authority": "0"
+        "Authority": "0",
     }
 
 if "total_input_tokens" not in st.session_state:
@@ -558,7 +573,7 @@ with st.sidebar:
         st.session_state.scores = {
             "AI_Readability": "0",
             "Fact_Density": "0",
-            "Authority": "0"
+            "Authority": "0",
         }
         st.session_state.total_input_tokens = 0
         st.session_state.total_output_tokens = 0
@@ -577,20 +592,24 @@ st.write(
 # ============================================================
 # RENDER PREVIOUS CHAT + VISUAL MOCKUPS
 # ============================================================
-for msg in st.session_state.messages:
+for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
             st.markdown(msg["content"])
         else:
-            tabs = st.tabs(["📋 Audit", "🌐 Mock Webpage Preview", "👨‍💻 Raw HTML"])
+            audit_tab, preview_tab, raw_tab = st.tabs(
+                ["📋 Audit", "🌐 Mock Webpage Preview", "👨‍💻 Raw HTML"]
+            )
 
-            with tabs[0]:
+            with audit_tab:
                 st.markdown(msg["content"])
 
-            with tabs[1]:
+            with preview_tab:
                 if msg.get("html"):
                     st.subheader("Live GEO Mockup")
-                    st.caption("This is a visual mock webpage based on the rewritten GEO content and the original website theme.")
+                    st.caption(
+                        "This is a visual mock webpage based on the rewritten GEO content and the original website theme."
+                    )
                     components.html(msg["html"], height=1500, scrolling=True)
 
                     st.download_button(
@@ -599,12 +618,12 @@ for msg in st.session_state.messages:
                         file_name="geo_optimised_page.html",
                         mime="text/html",
                         use_container_width=True,
-                        key=f"download_{hash(msg['html'])}"
+                        key=f"download_{idx}",
                     )
                 else:
                     st.warning("No visual webpage mockup was generated for this result.")
 
-            with tabs[2]:
+            with raw_tab:
                 if msg.get("html"):
                     st.code(msg["html"], language="html")
                 else:
@@ -622,17 +641,16 @@ for m in reversed(st.session_state.messages):
 if latest_mockup:
     st.divider()
     st.header("🌐 Latest GEO Website Mockup")
-    st.caption("This is the latest generated webpage mockup. Scroll inside the preview to see the full page.")
+    st.caption(
+        "This is the latest generated webpage mockup. Scroll inside the preview to see the full page."
+    )
     components.html(latest_mockup["html"], height=1600, scrolling=True)
 
 # ============================================================
 # CHAT INPUT
 # ============================================================
 if prompt := st.chat_input("Enter URL (starting with http) or paste website content..."):
-    st.session_state.messages.append({
-        "role": "user",
-        "content": prompt
-    })
+    st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -673,7 +691,7 @@ if prompt := st.chat_input("Enter URL (starting with http) or paste website cont
             "raw_css_excerpt": "",
             "inline_styles_excerpt": [],
             "colours": [],
-            "palette": DEFAULT_PALETTE.copy()
+            "palette": DEFAULT_PALETTE.copy(),
         }
 
     try:
@@ -865,18 +883,15 @@ HTML REQUIREMENTS:
             add_usage_to_session(html_response)
             html_raw = clean_html_output(html_response.text)
 
-        # If model fails to return valid HTML, build a fallback so the user still sees a mockup
+        # Build fallback page if model returns bad HTML
         if not html_looks_valid(html_raw):
             html_raw = build_fallback_html(
                 brand_name=source_data["brand_name"],
                 title=source_data["title"],
                 rewritten_content=rewritten_content,
-                palette=palette
+                palette=palette,
             )
 
-        # --------------------------------------------------------
-        # SAVE ASSISTANT MESSAGE WITH HTML
-        # --------------------------------------------------------
         assistant_message = {
             "role": "assistant",
             "content": display_text,
@@ -884,15 +899,12 @@ HTML REQUIREMENTS:
             "audit": {
                 "changes_made": changes_made,
                 "data_gaps": data_gaps,
-                "scores": scores
-            }
+                "scores": scores,
+            },
         }
 
         st.session_state.messages.append(assistant_message)
-
-        # Force re-render so preview persists in history + latest mockup section
         st.rerun()
 
     except Exception as e:
         st.error(f"Error: {str(e)}")
-``
