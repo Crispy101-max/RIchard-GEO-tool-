@@ -69,7 +69,7 @@ if prompt := st.chat_input("Enter URL (starting with http) or paste content...")
     # API Call with GEO System Instructions
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-Pro", # Using the current stable flash model
+            model="gemini-2.5-pro", # Using the current stable flash model
             config={
                 "system_instruction": """
                 **Role:** Expert GEO (Generative Engine Optimization) Strategist. Your goal is to rewrite and structure the content on a webpage to optiimse it for visibility on LLMs
