@@ -16,7 +16,6 @@ def extract_website_text(url):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
-        # Grab CSS colour hints BEFORE stripping styles
         style_tags = soup.find_all('style')
         css_text = "\n".join([s.get_text() for s in style_tags])
         color_hints = []
@@ -77,6 +76,8 @@ st.write("Paste a **URL** or **Text** below to audit its optimization for AI sea
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if "html_mockup" in st.session_state and st.session_state.html_mockup:
+            pass  # mockup re-render handled below
 
 # ── Input & AI Logic ──────────────────────────────────────────
 if prompt := st.chat_input("Enter URL (starting with http) or paste content..."):
@@ -86,102 +87,122 @@ if prompt := st.chat_input("Enter URL (starting with http) or paste content...")
 
     content_to_analyze = prompt
     if prompt.strip().startswith("http"):
-        with st.status("Reading website content..."):
+        with st.status("🔍 Reading website content..."):
             content_to_analyze = extract_website_text(prompt)
             if "Error scraping" in content_to_analyze:
                 st.error(content_to_analyze)
                 st.stop()
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-pro",
-            config={
-                "system_instruction": """
-⚠️ STRICT GROUNDING RULE — READ FIRST ⚠️
-You must ONLY use information, facts, statistics, names, and claims that already exist in the provided page content.
-- DO NOT invent statistics, percentages, or metrics
-- DO NOT fabricate author names, credentials, or publication dates
-- DO NOT create fictional client names or company details
-- If a specific fact or figure is missing but would strengthen a section, insert: [DATA NEEDED: brief description]
-- For case studies or results sections: if the page mentions a result, you may present it. If no result exists, write a placeholder card styled as: "Case Study: How [client type] improved [relevant outcome] — insert real client result here"
-- Never write the actual numbers or outcomes yourself. Frame the structure, not the claim.
-
-The content you receive is the ONLY source of truth. Your job is to RESTRUCTURE and REFRAME it, never invent it.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-You are an expert GEO strategist and web designer. Your job is to produce a single complete HTML webpage that shows what the client's website would look like after full GEO optimisation.
+        with st.status("⚙️ Generating GEO-optimised mockup... this may take 30-60 seconds"):
+            response = client.models.generate_content(
+                model="gemini-2.5-pro",
+                config={
+                    "system_instruction": """
+You are an expert GEO (Generative Engine Optimisation) strategist and web designer.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PART 1 — GEO CONTENT REWRITE
+⚠️ ABSOLUTE RULES — NEVER BREAK THESE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. ANSWER-FIRST: Every section opens with its most important fact or answer.
-2. QUESTION HEADERS: Convert headings to natural language questions mirroring AI queries.
-3. ENTITY DEFINITIONS: Add a definitional sentence for key concepts on first mention.
-4. PASSAGE CHUNKING: Break long paragraphs into 2-4 sentence retrievable blocks.
-5. SPEAKABLE SENTENCES: Refine existing sentences to be self-contained and citation-ready.
-6. E-E-A-T GAPS: Where credentials or dates are missing insert [DATA NEEDED: ...] — never invent.
-7. REDUNDANCY REMOVAL: Remove filler. Replace empty sections with [DATA NEEDED] placeholders.
+1. Your PRIMARY and MOST IMPORTANT output is the HTML mockup. You MUST always produce it.
+2. ONLY use facts, names, and claims already present in the page content provided.
+3. NEVER invent statistics, percentages, author names, credentials, or client results.
+4. Where information is missing but needed, insert a styled placeholder: [DATA NEEDED: description]
+5. For case studies with no real data: write "Case Study: How [client type from page] improved [relevant outcome] — add your real result here" — never fabricate the result.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PART 2 — FULL HTML PAGE
+STEP 1 — ANALYSE THE PAGE (internal only, do not output this)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Read the page and identify:
+- The colour scheme from the CSS context provided
+- The page sections and layout structure
+- What content exists vs what is missing
+- What needs restructuring for GEO
 
-Produce a single complete self-contained HTML file of the redesigned page.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — GEO REWRITES (internal only, feeds into HTML)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Apply to all content before building the HTML:
+- ANSWER-FIRST: Open every section with the most important fact
+- QUESTION HEADERS: Rewrite all headings as natural language questions (e.g. "What does X do?" not "About X")
+- ENTITY DEFINITIONS: Define every key term on first use in one sentence
+- PASSAGE CHUNKING: Break long paragraphs into 2-4 sentence blocks
+- REMOVE FILLER: Delete vague marketing language. Replace with [DATA NEEDED] if section becomes empty
+- E-E-A-T: Where author, date, or credentials are missing, add [DATA NEEDED: add author name and credentials]
 
-1. COLOUR SCHEME: Use hex values extracted from the provided CSS context.
-2. LAYOUT: Mirror the original page section structure and order exactly.
-3. CONTENT: Use only rewritten content from Part 1.
-4. DATA GAPS: Show red-bordered placeholder boxes labelled [DATA NEEDED] where content is missing.
-5. CASE STUDIES: Use real results if they exist. If not, render a styled card: "Case Study: Discover how [client type] improved [relevant outcome] — insert your real result here."
-6. TYPOGRAPHY: Clear hierarchy. System fonts only.
-7. QUALITY: Real agency-level design. Proper spacing, card shadows, consistent visual rhythm.
-8. RESPONSIVE: CSS flexbox or grid.
-9. SELF-CONTAINED: Pure HTML and inline CSS only. No JavaScript. No external CDN links.
-10. NO BADGES: Clean client-facing page. Developer notes in HTML comments only.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — BUILD THE HTML MOCKUP (THIS IS YOUR MAIN OUTPUT)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Produce a COMPLETE, POLISHED, SELF-CONTAINED HTML file.
 
-Wrap in:
+This is a visual client deliverable. It must look like a real finished professional website.
+
+HTML RULES:
+- Extract the real hex colour values from the CSS context and use them throughout
+- If no colours found, use a clean dark professional palette (#0f172a background, #6366f1 accent)
+- Mirror the original page section order and layout exactly
+- Use the GEO-rewritten content from Step 2 — never original unoptimised text
+- Style [DATA NEEDED] items as red dashed border boxes so clients see exactly what to fill in
+- Use CSS flexbox or grid for layout
+- System fonts only (no Google Fonts or CDN links)
+- No JavaScript
+- No external image URLs — use CSS gradients for hero backgrounds
+- Proper spacing, shadows on cards, clear visual hierarchy
+- Hero section with large headline, clear CTA button
+- Navigation bar at top
+- Footer at bottom
+- Mobile responsive
+
+CRITICAL: The HTML must be complete from <!DOCTYPE html> to </html>. Do not truncate it.
+
+Wrap the ENTIRE HTML file in these exact tags on their own lines:
 ||MOCKUP_START||
-[complete HTML]
+[your complete HTML here]
 ||MOCKUP_END||
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OUTPUT ORDER
+YOUR OUTPUT FORMAT — FOLLOW THIS EXACTLY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Brief summary of changes (150 words max)
-2. List of DATA NEEDED items
-3. HTML mockup in delimiters
-4. Scores
+
+Output in this exact order:
+
+**CHANGES MADE**
+[3-5 bullet points summarising what was restructured and why — max 100 words total]
+
+**DATA GAPS — CLIENT TO-DO LIST**
+[Bullet list of every [DATA NEEDED] item so client knows what to provide]
+
+[Then immediately output the HTML mockup wrapped in delimiters]
+
+||MOCKUP_START||
+[FULL HTML]
+||MOCKUP_END||
 
 ||SCORES||
 READ: [0-100]
 FACTS: [0-100]
 AUTH: [0-100]
 """,
-            },
-            contents=[{"role": "user", "parts": [{"text": content_to_analyze}]}]
-        )
-
-        # ── Everything below is INSIDE the try block ──────────
+                },
+                contents=[{"role": "user", "parts": [{"text": content_to_analyze}]}]
+            )
 
         full_text = response.text
 
-        # Token counter
+        # ── Token counter ──────────────────────────────────────
         try:
             usage = response.usage_metadata
             input_tokens  = usage.prompt_token_count or 0
             output_tokens = usage.candidates_token_count or 0
-            INPUT_COST_PER_1M  = 1.25
-            OUTPUT_COST_PER_1M = 10.00
-            call_cost = (input_tokens  / 1_000_000 * INPUT_COST_PER_1M) + \
-                        (output_tokens / 1_000_000 * OUTPUT_COST_PER_1M)
+            call_cost = (input_tokens  / 1_000_000 * 1.25) + \
+                        (output_tokens / 1_000_000 * 10.00)
             st.session_state.total_input_tokens  += input_tokens
             st.session_state.total_output_tokens += output_tokens
             st.session_state.total_cost          += call_cost
         except Exception:
             pass
 
-        # Parse scores
+        # ── Parse scores ───────────────────────────────────────
         if "||SCORES||" in full_text:
             full_text, score_block = full_text.split("||SCORES||", 1)
             try:
@@ -191,30 +212,37 @@ AUTH: [0-100]
             except AttributeError:
                 pass
 
-        # Parse HTML mockup
-        html_mockup = None
+        # ── Parse HTML mockup ──────────────────────────────────
+        html_mockup  = None
+        display_text = full_text.strip()
+
         if "||MOCKUP_START||" in full_text and "||MOCKUP_END||" in full_text:
             before, rest       = full_text.split("||MOCKUP_START||", 1)
             html_mockup, after = rest.split("||MOCKUP_END||", 1)
             html_mockup        = html_mockup.strip()
             display_text       = (before + after).strip()
         else:
-            display_text = full_text.strip()
+            # Fallback: try to find raw HTML if delimiters were dropped
+            if "<!DOCTYPE html>" in full_text:
+                idx         = full_text.index("<!DOCTYPE html>")
+                html_mockup = full_text[idx:].strip()
+                display_text = full_text[:idx].strip()
 
-        # Render output
+        # ── Render ─────────────────────────────────────────────
         with st.chat_message("assistant"):
-            st.markdown(display_text)
+            if display_text:
+                st.markdown(display_text)
 
             if html_mockup:
                 st.divider()
-                st.subheader("🌐 Your GEO-Optimised Website Preview")
-                st.caption("Scroll within the frame to see the full design.")
-                st.components.v1.html(html_mockup, height=1200, scrolling=True)
+                st.subheader("🌐 GEO-Optimised Website Preview")
+                st.caption("This is your restructured page. Scroll inside the frame to see the full design.")
+                st.components.v1.html(html_mockup, height=1400, scrolling=True)
                 st.divider()
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.info("👆 Scroll the preview above to see the full page.")
+                    st.info("👆 Scroll inside the preview to see the full page.")
                 with col2:
                     st.download_button(
                         label="⬇️ Download HTML File",
@@ -226,7 +254,9 @@ AUTH: [0-100]
                 with st.expander("👨‍💻 View Raw HTML (for your developer)"):
                     st.code(html_mockup, language="html")
             else:
-                st.warning("No mockup was generated. Try submitting the URL again.")
+                st.warning("⚠️ The model did not return a visual mockup this time. Try submitting the URL again — Gemini occasionally drops the HTML block on complex pages.")
+                with st.expander("🔍 Debug — raw model output"):
+                    st.text(full_text[:3000])
 
         st.session_state.messages.append({"role": "assistant", "content": display_text})
         st.rerun()
