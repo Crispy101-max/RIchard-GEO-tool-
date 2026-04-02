@@ -72,7 +72,7 @@ if prompt := st.chat_input("Enter URL (starting with http) or paste content...")
             model="gemini-2.5-flash", # Using the current stable flash model
             config={
                 "system_instruction": """
-                **Role:** Expert GEO (Generative Engine Optimization) Strategist. 
+                **Role:** Expert GEO (Generative Engine Optimization) Strategist. Your goal is to rewrite and structure the content on a webpage to optiimse it for visibility on LLMs
                 
                 **Analysis Goal:** Critique the text for 'Extractability' (how easily an AI finds facts) and 'Authority'.
                 
