@@ -3,435 +3,515 @@ import streamlit.components.v1 as components
 from google import genai
 import re
 import requests
+import json
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 
+# -----------------------------
+# App / API setup
+# -----------------------------
+st.set_page_config(page_title="GEO Content Auditor", layout="wide")
 client = genai.Client(api_key=st.secrets["API_Key"])
 
-# ── URL Scraper ───────────────────────────────────────────────
-def extract_website_text(url):
+HEX_PATTERN = re.compile(r'#[0-9a-fA-F]{3,8}\b')
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def clean_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_hex_colours(css_text: str, inline_styles: list[str]) -> list[str]:
+    combined = css_text + "\n" + "\n".join(inline_styles)
+    colours = HEX_PATTERN.findall(combined)
+
+    # Normalise and dedupe while preserving order
+    seen = set()
+    cleaned = []
+    for c in colours:
+        c = c.lower()
+        if len(c) == 4:  # #abc -> #aabbcc
+            c = "#" + "".join([x * 2 for x in c[1:]])
+        if c not in seen:
+            seen.add(c)
+            cleaned.append(c)
+
+    return cleaned[:8]
+
+
+def domain_to_brand(url: str) -> str:
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        style_tags = soup.find_all('style')
-        css_text = "\n".join([s.get_text() for s in style_tags])
-        color_hints = []
-        for tag in soup.find_all(style=True):
-            style_val = tag.get('style', '')
-            if 'color' in style_val or 'background' in style_val:
-                color_hints.append(style_val)
-
-        for element in soup(['script', 'style', 'nav', 'footer', 'header']):
-            element.decompose()
-
-        page_text = soup.get_text(separator=' ', strip=True)
-        colour_context = f"\n\n---COLOUR CONTEXT---\n{css_text[:3000]}\nInline colour hints: {'; '.join(color_hints[:20])}"
-        return page_text + colour_context
-
-    except Exception as e:
-        return f"Error scraping {url}: {str(e)}"
+        netloc = urlparse(url).netloc.replace("www.", "")
+        brand = netloc.split(".")[0]
+        return brand.replace("-", " ").replace("_", " ").title()
+    except Exception:
+        return "Brand"
 
 
-# ── HTML Builder — Python builds the page, not Gemini ────────
-def build_html_page(sections: dict, colours: dict) -> str:
-    bg      = colours.get("bg",      "#0f172a")
-    card    = colours.get("card",    "#1e293b")
-    accent  = colours.get("accent",  "#6366f1")
-    text    = colours.get("text",    "#e2e8f0")
-    muted   = colours.get("muted",   "#94a3b8")
-    border  = colours.get("border",  "#334155")
-    brand   = sections.get("brand",  "Your Brand")
+def extract_website_data(url: str) -> dict:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()
 
-    def render_section(heading, body, bg_override=None):
-        section_bg = bg_override if bg_override else card
-        # Style [DATA NEEDED] items in red dashed boxes
-        body_html = body.replace(
-            "[DATA NEEDED",
-            '<span class="data-needed">[DATA NEEDED'
-        ).replace(
-            "]", "]</span>", 1
-        ) if "[DATA NEEDED" in body else body
+    soup = BeautifulSoup(response.text, "html.parser")
 
-        # Convert newlines to paragraph breaks
-        paragraphs = [f"<p>{p.strip()}</p>" for p in body.split("\n") if p.strip()]
-        body_rendered = "\n".join(paragraphs)
+    title = soup.title.get_text(strip=True) if soup.title else domain_to_brand(url)
 
-        return f"""
-        <section style="background:{section_bg}; padding:70px 20px; border-bottom:1px solid {border};">
-            <div style="max-width:960px; margin:0 auto;">
-                <h2 style="color:{text}; font-size:2rem; margin-bottom:24px; line-height:1.3;">{heading}</h2>
-                <div style="color:{muted}; font-size:1.05rem; line-height:1.8;">{body_rendered}</div>
-            </div>
-        </section>"""
+    meta_description = ""
+    meta_tag = soup.find("meta", attrs={"name": "description"})
+    if meta_tag and meta_tag.get("content"):
+        meta_description = meta_tag["content"].strip()
 
-    def render_cards(heading, items: list, bg_override=None):
-        section_bg = bg_override if bg_override else bg
-        cards_html = ""
-        for item in items:
-            title = item.get("title", "")
-            body  = item.get("body",  "")
-            cards_html += f"""
-            <div style="background:{card}; border:1px solid {border}; border-radius:12px;
-                        padding:28px; box-shadow:0 4px 20px rgba(0,0,0,0.3);">
-                <h3 style="color:{text}; font-size:1.2rem; margin-bottom:12px;">{title}</h3>
-                <p style="color:{muted}; font-size:1rem; line-height:1.7;">{body}</p>
-            </div>"""
+    # Keep style info before removing tags
+    style_tags = soup.find_all("style")
+    css_text = "\n".join([s.get_text(" ", strip=True) for s in style_tags])
 
-        return f"""
-        <section style="background:{section_bg}; padding:70px 20px; border-bottom:1px solid {border};">
-            <div style="max-width:960px; margin:0 auto;">
-                <h2 style="color:{text}; font-size:2rem; margin-bottom:40px; text-align:center;">{heading}</h2>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:24px;">
-                    {cards_html}
-                </div>
-            </div>
-        </section>"""
+    inline_styles = []
+    for tag in soup.find_all(style=True):
+        style_val = tag.get("style", "")
+        if "color" in style_val.lower() or "background" in style_val.lower():
+            inline_styles.append(style_val)
 
-    # Build all sections
-    hero_title   = sections.get("hero_title",   "Your GEO-Optimised Headline")
-    hero_sub     = sections.get("hero_sub",     "Your updated subheading goes here.")
-    hero_cta     = sections.get("hero_cta",     "Get Your Free GEO Audit")
-    what_heading = sections.get("what_heading", "What Is This Service?")
-    what_body    = sections.get("what_body",    "")
-    how_heading  = sections.get("how_heading",  "How Does It Work?")
-    how_body     = sections.get("how_body",     "")
-    results_heading = sections.get("results_heading", "What Results Can You Expect?")
-    results_items   = sections.get("results_items",   [])
-    about_heading   = sections.get("about_heading",   "Who Are We?")
-    about_body      = sections.get("about_body",      "")
-    data_gaps       = sections.get("data_gaps",       [])
+    colours = extract_hex_colours(css_text, inline_styles)
 
-    data_gaps_html = "".join([
-        f'<li style="margin-bottom:8px; color:{muted};">'
-        f'<span style="color:#f87171; font-weight:600;">●</span> {g}</li>'
-        for g in data_gaps
-    ])
+    # Grab headings for structure clues
+    headings = []
+    for h in soup.find_all(["h1", "h2", "h3"]):
+        txt = clean_whitespace(h.get_text(" ", strip=True))
+        if txt:
+            headings.append(txt)
 
-    results_section = render_cards(results_heading, results_items) if results_items else \
-        render_section(results_heading, sections.get("results_body", "[DATA NEEDED: Add client results or case studies]"))
+    # Remove junk for text extraction
+    for element in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
+        element.decompose()
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{brand} — GEO Optimised</title>
-<style>
-* {{ margin:0; padding:0; box-sizing:border-box; }}
-body {{ font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-        background:{bg}; color:{text}; line-height:1.6; }}
-.data-needed {{
-    display:inline-block; background:rgba(239,68,68,0.1);
-    border:2px dashed #ef4444; border-radius:6px;
-    padding:2px 8px; color:#fca5a5; font-style:italic; font-size:0.9em;
-}}
-a {{ color:{accent}; }}
-@media(max-width:768px) {{
-    h1 {{ font-size:2rem !important; }}
-    h2 {{ font-size:1.5rem !important; }}
-}}
-</style>
-</head>
-<body>
+    page_text = clean_whitespace(soup.get_text(separator=" ", strip=True))
 
-<!-- NAV -->
-<nav style="background:{card}; border-bottom:1px solid {border};
-            padding:16px 20px; position:sticky; top:0; z-index:100;">
-    <div style="max-width:960px; margin:0 auto; display:flex;
-                justify-content:space-between; align-items:center;">
-        <span style="font-size:1.3rem; font-weight:700; color:{text};">{brand}</span>
-        <a href="#contact" style="background:{accent}; color:#fff; padding:10px 22px;
-           border-radius:8px; text-decoration:none; font-weight:600; font-size:0.95rem;">
-           {hero_cta}
-        </a>
-    </div>
-</nav>
+    # Limit text size to avoid excessive token use
+    page_text = page_text[:25000]
 
-<!-- HERO -->
-<header style="background: linear-gradient(135deg, {bg} 0%, {card} 100%);
-               padding:100px 20px; text-align:center; border-bottom:1px solid {border};">
-    <div style="max-width:800px; margin:0 auto;">
-        <h1 style="font-size:3.2rem; font-weight:800; color:{text};
-                   line-height:1.15; margin-bottom:20px; letter-spacing:-1px;">
-            {hero_title}
-        </h1>
-        <p style="font-size:1.2rem; color:{muted}; max-width:600px;
-                  margin:0 auto 36px auto; line-height:1.7;">
-            {hero_sub}
-        </p>
-        <a href="#contact" style="background:{accent}; color:#fff; padding:16px 36px;
-           border-radius:10px; text-decoration:none; font-weight:700;
-           font-size:1.1rem; display:inline-block;">
-            {hero_cta}
-        </a>
-    </div>
-</header>
-
-{render_section(what_heading, what_body, bg)}
-{render_section(how_heading,  how_body,  card)}
-{results_section}
-{render_section(about_heading, about_body, card)}
-
-<!-- DATA GAPS PANEL -->
-<section style="background:#1a0a0a; padding:60px 20px;
-                border-top:2px dashed #ef4444; border-bottom:1px solid {border};">
-    <div style="max-width:960px; margin:0 auto;">
-        <h2 style="color:#f87171; font-size:1.5rem; margin-bottom:8px;">
-            📋 Client To-Do List — Content Needed to Complete This Page
-        </h2>
-        <p style="color:{muted}; margin-bottom:24px; font-size:0.95rem;">
-            The following information is missing from your current site.
-            Providing it will significantly improve your GEO score and AI visibility.
-        </p>
-        <ul style="list-style:none; padding:0;">
-            {data_gaps_html}
-        </ul>
-    </div>
-</section>
-
-<!-- CTA / CONTACT -->
-<section id="contact" style="background:{bg}; padding:80px 20px; text-align:center;">
-    <div style="max-width:700px; margin:0 auto;">
-        <h2 style="color:{text}; font-size:2rem; margin-bottom:16px;">
-            Ready to Dominate AI Search?
-        </h2>
-        <p style="color:{muted}; font-size:1.1rem; margin-bottom:32px;">
-            Get in touch to see how GEO can make your brand the answer AI gives your customers.
-        </p>
-        <a href="#" style="background:{accent}; color:#fff; padding:16px 40px;
-           border-radius:10px; text-decoration:none; font-weight:700; font-size:1.1rem;">
-            {hero_cta}
-        </a>
-    </div>
-</section>
-
-<!-- FOOTER -->
-<footer style="background:{card}; padding:30px 20px; text-align:center;
-               border-top:1px solid {border};">
-    <p style="color:{muted}; font-size:0.9rem;">
-        © 2025 {brand}. GEO-optimised with Janus Labs.
-    </p>
-</footer>
-
-</body>
-</html>"""
+    return {
+        "url": url,
+        "title": title,
+        "brand_name": domain_to_brand(url),
+        "meta_description": meta_description,
+        "headings": headings[:20],
+        "page_text": page_text,
+        "colours": colours,
+        "raw_css_excerpt": css_text[:4000],
+        "inline_styles_excerpt": inline_styles[:20],
+    }
 
 
-# ── Colour extractor ──────────────────────────────────────────
-def extract_colours(css_text: str) -> dict:
-    defaults = {"bg":"#0f172a","card":"#1e293b","accent":"#6366f1",
-                "text":"#e2e8f0","muted":"#94a3b8","border":"#334155"}
-    hex_pattern = r'#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})'
-    found = re.findall(hex_pattern, css_text)
-    if len(found) >= 3:
-        colours = ["#" + c for c in found]
-        # Heuristic: darkest = bg, mid = card, most vivid = accent
-        def brightness(h):
-            h = h.lstrip("#")
-            if len(h) == 3: h = h[0]*2 + h[1]*2 + h[2]*2
-            r,g,b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
-            return 0.299*r + 0.587*g + 0.114*b
-        sorted_c = sorted(set(colours), key=brightness)
-        if len(sorted_c) >= 2:
-            defaults["bg"]   = sorted_c[0]
-            defaults["card"] = sorted_c[1] if len(sorted_c) > 1 else defaults["card"]
-        for c in colours:
-            h = c.lstrip("#")
-            if len(h) == 3: h = h[0]*2+h[1]*2+h[2]*2
-            r,g,b = int(h[0:2],16),int(h[2:4],16),int(h[4:6],16)
-            saturation = max(r,g,b) - min(r,g,b)
-            if saturation > 80:
-                defaults["accent"] = c
-                break
-    return defaults
+def parse_json_from_model(text: str) -> dict:
+    """
+    Safely parse JSON even if the model wraps it in markdown fences.
+    """
+    cleaned = text.strip()
+
+    # Remove code fences if present
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    # Try full parse first
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+
+    # Fallback: extract from first { to last }
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        snippet = cleaned[start:end + 1]
+        return json.loads(snippet)
+
+    raise ValueError("Could not parse valid JSON from model response.")
 
 
-# ── Session State ─────────────────────────────────────────────
+def clean_html_output(html_raw: str) -> str:
+    html_raw = html_raw.strip()
+
+    # Remove markdown fences
+    if html_raw.startswith("```"):
+        html_raw = re.sub(r"^```(?:html)?\s*", "", html_raw)
+        html_raw = re.sub(r"\s*```$", "", html_raw)
+
+    return html_raw.strip()
+
+
+def html_looks_valid(html_raw: str) -> bool:
+    lowered = html_raw.strip().lower()
+    return lowered.startswith("<!doctype html") or lowered.startswith("<html")
+
+
+def add_usage_to_session(response):
+    try:
+        usage = response.usage_metadata
+        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+
+        st.session_state.total_input_tokens += prompt_tokens
+        st.session_state.total_output_tokens += output_tokens
+
+        # Gemini 2.5 Pro pricing used from your original code
+        st.session_state.total_cost += (prompt_tokens / 1_000_000 * 1.25) + \
+                                       (output_tokens / 1_000_000 * 10.00)
+    except Exception:
+        pass
+
+
+def call_gemini(user_text: str, system_instruction: str):
+    response = client.models.generate_content(
+        model="gemini-2.5-pro",
+        config={"system_instruction": system_instruction},
+        contents=[{"role": "user", "parts": [{"text": user_text}]}]
+    )
+    return response
+
+
+# -----------------------------
+# Session State
+# -----------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
 if "scores" not in st.session_state:
-    st.session_state.scores = {"AI_Readability":"0","Fact_Density":"0","Authority":"0"}
+    st.session_state.scores = {
+        "AI_Readability": "0",
+        "Fact_Density": "0",
+        "Authority": "0"
+    }
+
 if "total_input_tokens" not in st.session_state:
     st.session_state.total_input_tokens = 0
+
 if "total_output_tokens" not in st.session_state:
     st.session_state.total_output_tokens = 0
+
 if "total_cost" not in st.session_state:
     st.session_state.total_cost = 0.0
 
-# ── Sidebar ───────────────────────────────────────────────────
+
+# -----------------------------
+# Sidebar
+# -----------------------------
 with st.sidebar:
     st.title("📊 GEO Scoreboard")
     st.metric("AI Readability", f"{st.session_state.scores['AI_Readability']}/100")
-    st.metric("Fact Density",   f"{st.session_state.scores['Fact_Density']}%")
-    st.metric("Entity Authority",f"{st.session_state.scores['Authority']}/100")
+    st.metric("Fact Density", f"{st.session_state.scores['Fact_Density']}%")
+    st.metric("Entity Authority", f"{st.session_state.scores['Authority']}/100")
+
     st.divider()
     st.subheader("🔢 Token Usage")
-    c1, c2 = st.columns(2)
-    with c1: st.metric("Input",  f"{st.session_state.total_input_tokens:,}")
-    with c2: st.metric("Output", f"{st.session_state.total_output_tokens:,}")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Input", f"{st.session_state.total_input_tokens:,}")
+    with col2:
+        st.metric("Output", f"{st.session_state.total_output_tokens:,}")
+
     st.metric("💰 Session Cost", f"${st.session_state.total_cost:.4f}")
     st.caption("Gemini 2.5 Pro: $1.25/1M input · $10.00/1M output")
+
     st.divider()
     if st.button("Clear History"):
         st.session_state.messages = []
+        st.session_state.scores = {
+            "AI_Readability": "0",
+            "Fact_Density": "0",
+            "Authority": "0"
+        }
         st.session_state.total_input_tokens = 0
         st.session_state.total_output_tokens = 0
         st.session_state.total_cost = 0.0
         st.rerun()
 
-# ── Main UI ───────────────────────────────────────────────────
+
+# -----------------------------
+# UI
+# -----------------------------
 st.title("🚀 GEO Content Auditor")
-st.write("Paste a **URL** or **Text** below to audit its optimization for AI search engines.")
+st.write(
+    "Paste a **URL** or **Text** below to audit its optimisation for AI search engines, "
+    "rewrite it for GEO, and preview a visual mock webpage."
+)
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── Core Logic ────────────────────────────────────────────────
-if prompt := st.chat_input("Enter URL (starting with http) or paste content..."):
+
+# -----------------------------
+# Main flow
+# -----------------------------
+if prompt := st.chat_input("Enter URL (starting with http) or paste website content..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
+
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # Step 0: Load source
+    source_data = None
     content_to_analyze = prompt
+    source_mode = "text"
+
     if prompt.strip().startswith("http"):
+        source_mode = "url"
         with st.status("🔍 Reading website..."):
-            content_to_analyze = extract_website_text(prompt)
-            if "Error scraping" in content_to_analyze:
-                st.error(content_to_analyze)
+            try:
+                source_data = extract_website_data(prompt)
+                content_to_analyze = source_data["page_text"]
+
+                if not content_to_analyze.strip():
+                    st.error("The page was fetched but no readable text content was found.")
+                    st.stop()
+
+            except Exception as e:
+                st.error(f"Error scraping {prompt}: {str(e)}")
                 st.stop()
+    else:
+        # Pasted text mode
+        source_data = {
+            "url": "",
+            "title": "Pasted Content",
+            "brand_name": "Brand",
+            "meta_description": "",
+            "headings": [],
+            "page_text": clean_whitespace(prompt)[:25000],
+            "colours": [],
+            "raw_css_excerpt": "",
+            "inline_styles_excerpt": [],
+        }
 
     try:
-        SYSTEM = """
-You are a GEO (Generative Engine Optimisation) expert.
+        # -----------------------------
+        # CALL 1: GEO audit + rewritten content (JSON)
+        # -----------------------------
+        analysis_system = """
+You are a senior Generative Engine Optimisation (GEO) strategist.
 
-⚠️ RULES:
-- Only use facts already on the page. Never invent statistics, names, or results.
-- For missing info write [DATA NEEDED: description]
-- For missing case study results write: "Case Study: How [client type] improved [outcome] — add your real result here"
+Your task:
+1. Assess what prevents the page from being GEO-optimised.
+2. Rewrite the page so it is GEO-optimised.
+3. Keep the content and meaning roughly the same.
+4. Improve structure, headings, chunking, clarity, answer-first delivery, entity definitions, and trust signals.
+5. NEVER invent facts, statistics, credentials, case studies, or results.
+6. If required information is missing, insert placeholders exactly in this format:
+   [DATA NEEDED: short description]
 
-Return your response as a JSON object with exactly these keys:
+IMPORTANT RULES:
+- Only use facts already present in the source content.
+- If the source page is thin, create a stronger structure using the existing meaning.
+- Keep it commercially usable and realistic.
+- Do not output commentary outside valid JSON.
 
+Return VALID JSON only in exactly this structure:
 {
-  "brand": "brand or company name from the page",
-  "hero_title": "rewritten main headline as a bold claim or question",
-  "hero_sub": "1-2 sentence subheading, answer-first",
-  "hero_cta": "call to action button text",
-  "what_heading": "heading as a natural language question about what the service is",
-  "what_body": "2-4 paragraphs defining GEO and the service. Define terms on first use.",
-  "how_heading": "heading as a natural language question about how it works",
-  "how_body": "2-4 paragraphs explaining the process. Use [DATA NEEDED] where info is missing.",
-  "results_heading": "heading as a question about results or proof",
-  "results_items": [
-    {"title": "Case study or result title", "body": "description or placeholder"},
-    {"title": "Second result title", "body": "description or placeholder"}
-  ],
-  "about_heading": "heading as a question about who the agency is",
-  "about_body": "2-3 paragraphs. Use [DATA NEEDED] for missing author/credentials.",
-  "data_gaps": [
-    "Plain English description of each piece of missing content the client needs to provide"
-  ],
-  "colours": {
-    "bg": "darkest hex colour from CSS context or #0f172a",
-    "card": "second darkest hex or #1e293b",
-    "accent": "most vivid/bright hex colour or #6366f1",
-    "text": "lightest hex or #e2e8f0",
-    "muted": "mid-tone text hex or #94a3b8",
-    "border": "subtle border hex or #334155"
-  },
-  "changes": [
-    "Bullet point 1 explaining what was restructured",
-    "Bullet point 2",
-    "Bullet point 3"
-  ],
-  "scores": {"read": 75, "facts": 40, "auth": 30}
+  "changes_made": ["...", "..."],
+  "rewritten_content": "...",
+  "data_gaps": ["...", "..."],
+  "scores": {
+    "readability": 0,
+    "fact_density": 0,
+    "authority": 0
+  }
 }
-
-Return ONLY the JSON. No markdown. No explanation. No code fences.
 """
 
-        with st.status("🧠 Analysing and restructuring content..."):
-            response = client.models.generate_content(
-                model="gemini-2.5-pro",
-                config={"system_instruction": SYSTEM},
-                contents=[{"role": "user", "parts": [{"text": content_to_analyze}]}]
-            )
-            raw = response.text.strip()
+        analysis_user = f"""
+SOURCE TYPE: {source_mode}
 
-            # Token tracking
-            try:
-                usage = response.usage_metadata
-                st.session_state.total_input_tokens  += usage.prompt_token_count or 0
-                st.session_state.total_output_tokens += usage.candidates_token_count or 0
-                st.session_state.total_cost += (
-                    (usage.prompt_token_count or 0) / 1_000_000 * 1.25 +
-                    (usage.candidates_token_count or 0) / 1_000_000 * 10.00
-                )
-            except Exception:
-                pass
+PAGE TITLE:
+{source_data["title"]}
 
-        # Strip code fences if model added them
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$",       "", raw).strip()
+BRAND NAME:
+{source_data["brand_name"]}
 
-        import json
-        data = json.loads(raw)
+META DESCRIPTION:
+{source_data["meta_description"]}
 
-        # Update scores
-        try:
-            scores = data.get("scores", {})
-            st.session_state.scores["AI_Readability"] = str(scores.get("read",  0))
-            st.session_state.scores["Fact_Density"]   = str(scores.get("facts", 0))
-            st.session_state.scores["Authority"]       = str(scores.get("auth",  0))
-        except Exception:
-            pass
+ORIGINAL HEADINGS:
+{json.dumps(source_data["headings"], ensure_ascii=False)}
 
-        # Extract colours from page CSS + model suggestion
-        page_colours = extract_colours(content_to_analyze)
-        model_colours = data.get("colours", {})
-        final_colours = {**page_colours, **{k: v for k, v in model_colours.items() if v and v.startswith("#")}}
+SOURCE CONTENT:
+{source_data["page_text"]}
 
-        # Build the HTML using Python template
-        html_page = build_html_page(data, final_colours)
+Rewrite requirements:
+- Use question-style headings where appropriate.
+- Start sections with the most important answer/fact.
+- Define key terms on first mention.
+- Break long paragraphs into short 2-4 sentence blocks.
+- Remove vague filler.
+- Preserve the page's original commercial intent.
+- Add [DATA NEEDED: ...] where specifics are missing.
+- Make the content suitable for AI search engines.
+"""
 
-        # ── Render ─────────────────────────────────────────────
-        changes   = data.get("changes",   [])
-        data_gaps = data.get("data_gaps", [])
+        with st.status("🧠 Step 1/2 — Auditing and rewriting content..."):
+            analysis_response = call_gemini(analysis_user, analysis_system)
+            add_usage_to_session(analysis_response)
+            analysis_json = parse_json_from_model(analysis_response.text)
 
-        summary_md = "### What Was Changed\n" + \
-                     "\n".join([f"- {c}" for c in changes]) + \
-                     "\n\n### Client To-Do List\n" + \
-                     "\n".join([f"- {g}" for g in data_gaps])
+        # Validate/fallback
+        changes_made = analysis_json.get("changes_made", [])
+        rewritten_content = analysis_json.get("rewritten_content", "").strip()
+        data_gaps = analysis_json.get("data_gaps", [])
+        scores = analysis_json.get("scores", {})
 
+        if not rewritten_content:
+            st.error("The model did not return rewritten content.")
+            st.stop()
+
+        st.session_state.scores["AI_Readability"] = str(scores.get("readability", 0))
+        st.session_state.scores["Fact_Density"] = str(scores.get("fact_density", 0))
+        st.session_state.scores["Authority"] = str(scores.get("authority", 0))
+
+        # Build audit display text
+        display_text = "## 1. CHANGES MADE\n"
+        if changes_made:
+            for item in changes_made[:5]:
+                display_text += f"- {item}\n"
+        else:
+            display_text += "- No specific changes returned.\n"
+
+        display_text += "\n## 2. GEO-REWRITTEN CONTENT\n"
+        display_text += rewritten_content + "\n"
+
+        display_text += "\n## 3. DATA GAPS LIST\n"
+        if data_gaps:
+            for gap in data_gaps:
+                display_text += f"- {gap}\n"
+        else:
+            display_text += "- No major gaps identified.\n"
+
+        # -----------------------------
+        # CALL 2: HTML mock webpage
+        # -----------------------------
+        palette = source_data["colours"] if source_data["colours"] else [
+            "#0f172a", "#1e293b", "#6366f1", "#e2e8f0"
+        ]
+
+        html_system = """
+You are a professional website designer.
+
+Your ONLY job is to produce a complete HTML webpage for visual mockup purposes.
+
+RULES:
+- Output ONLY raw HTML.
+- Do not include markdown fences.
+- Do not include any commentary.
+- Start with <!DOCTYPE html> and end with </html>.
+- No JavaScript.
+- No external fonts.
+- No external image URLs.
+- Use CSS only.
+- The page must look polished and realistic, not like a wireframe.
+- The mockup is for visualisation only.
+"""
+
+        html_user = f"""
+Create a fully responsive, professional HTML mock webpage using the GEO-rewritten content below.
+
+GOAL:
+- This is a visual mockup of the improved page.
+- Keep the original theme/style direction as much as possible.
+- Use the original page colours where available.
+- Reflect a cleaner GEO-optimised structure.
+- Show [DATA NEEDED: ...] items as red dashed placeholder boxes.
+
+BRAND NAME:
+{source_data["brand_name"]}
+
+PAGE TITLE:
+{source_data["title"]}
+
+ORIGINAL URL:
+{source_data["url"]}
+
+ORIGINAL HEADINGS:
+{json.dumps(source_data["headings"], ensure_ascii=False)}
+
+COLOUR PALETTE TO USE:
+{json.dumps(palette)}
+
+CSS EXCERPT FOR STYLE CLUES:
+{source_data["raw_css_excerpt"]}
+
+INLINE STYLE CLUES:
+{json.dumps(source_data["inline_styles_excerpt"], ensure_ascii=False)}
+
+GEO-REWRITTEN CONTENT:
+{rewritten_content}
+
+HTML REQUIREMENTS:
+- Complete HTML document from <!DOCTYPE html> to </html>
+- Use the colour palette exactly where possible
+- Include a top navigation bar
+- Include a strong hero section
+- Include all sections present in the rewritten content
+- Preserve the section order from the rewritten content
+- Use cards, spacing, hierarchy, and subtle shadows
+- Use system fonts only
+- Make it modern and conversion-friendly
+- Footer at bottom
+- If a section contains [DATA NEEDED: ...], display it in a clearly styled red dashed box
+- If the page is text-heavy, make it visually appealing with alternating sections, cards, highlighted key points, and clean layout
+- No lorem ipsum
+- No fake client results
+- No fake testimonials
+
+Return raw HTML only.
+"""
+
+        with st.status("🎨 Step 2/2 — Building mock webpage..."):
+            html_response = call_gemini(html_user, html_system)
+            add_usage_to_session(html_response)
+            html_raw = clean_html_output(html_response.text)
+
+        # -----------------------------
+        # Render result
+        # -----------------------------
         with st.chat_message("assistant"):
-            st.markdown(summary_md)
+            st.markdown(display_text)
+
             st.divider()
             st.subheader("🌐 GEO-Optimised Website Preview")
-            st.caption("This is your restructured page. Scroll inside the frame to see the full design.")
-            st.components.v1.html(html_page, height=1400, scrolling=True)
-            st.divider()
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.info("👆 Scroll inside the preview to see the full page.")
-            with col2:
-                st.download_button(
-                    label="⬇️ Download HTML File",
-                    data=html_page,
-                    file_name="geo_optimised_page.html",
-                    mime="text/html",
-                    use_container_width=True
-                )
-            with st.expander("👨‍💻 Raw HTML for your developer"):
-                st.code(html_page, language="html")
+            if html_looks_valid(html_raw):
+                st.caption("Scroll inside the frame to view the redesigned mock page.")
+                components.html(html_raw, height=1400, scrolling=True)
 
-        st.session_state.messages.append({"role": "assistant", "content": summary_md})
+                st.divider()
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.info("👆 Scroll inside the preview above to see the full page.")
+
+                with col2:
+                    st.download_button(
+                        label="⬇️ Download HTML File",
+                        data=html_raw,
+                        file_name="geo_optimised_page.html",
+                        mime="text/html",
+                        use_container_width=True
+                    )
+
+                with st.expander("👨‍💻 Raw HTML for your developer"):
+                    st.code(html_raw, language="html")
+
+            else:
+                st.error("HTML mockup could not be generated as valid HTML. Raw output below:")
+                st.text(html_raw[:3000])
+
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": display_text
+        })
+
         st.rerun()
 
-    except json.JSONDecodeError as e:
-        st.error(f"JSON parse error: {e}")
-        st.text(raw[:3000])
     except Exception as e:
         st.error(f"Error: {e}")
