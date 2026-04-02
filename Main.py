@@ -157,6 +157,76 @@ AUTH: [0-100]
         )
 
         full_text = response.text
+full_text = response.text
+
+# Token counting
+try:
+    usage = response.usage_metadata
+    input_tokens = usage.prompt_token_count or 0
+    output_tokens = usage.candidates_token_count or 0
+    INPUT_COST_PER_1M  = 1.25
+    OUTPUT_COST_PER_1M = 10.00
+    call_cost = (input_tokens / 1_000_000 * INPUT_COST_PER_1M) + \
+                (output_tokens / 1_000_000 * OUTPUT_COST_PER_1M)
+    st.session_state.total_input_tokens  += input_tokens
+    st.session_state.total_output_tokens += output_tokens
+    st.session_state.total_cost          += call_cost
+except Exception:
+    pass
+
+# Parse scores
+if "||SCORES||" in full_text:
+    full_text, score_block = full_text.split("||SCORES||", 1)
+    try:
+        st.session_state.scores["AI_Readability"] = re.search(r"READ:\s*(\d+)", score_block).group(1)
+        st.session_state.scores["Fact_Density"]   = re.search(r"FACTS:\s*(\d+)", score_block).group(1)
+        st.session_state.scores["Authority"]       = re.search(r"AUTH:\s*(\d+)", score_block).group(1)
+    except AttributeError:
+        pass
+
+# Parse HTML mockup
+html_mockup = None
+if "||MOCKUP_START||" in full_text and "||MOCKUP_END||" in full_text:
+    before, rest       = full_text.split("||MOCKUP_START||", 1)
+    html_mockup, after = rest.split("||MOCKUP_END||", 1)
+    html_mockup        = html_mockup.strip()
+    display_text       = (before + after).strip()
+else:
+    display_text = full_text.strip()
+
+# Render the written summary
+with st.chat_message("assistant"):
+    st.markdown(display_text)
+
+    if html_mockup:
+        st.divider()
+        st.subheader("🌐 Your GEO-Optimised Website Preview")
+        st.caption("This is a live preview of your rewritten page. Scroll within the frame to see the full design.")
+        
+        # Render the actual page visually - tall enough to feel like a real site
+        st.components.v1.html(html_mockup, height=1200, scrolling=True)
+        
+        st.divider()
+        
+        # Two columns: copy button context + download
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info("👆 Scroll the preview above to see the full page design.")
+        with col2:
+            st.download_button(
+                label="⬇️ Download HTML File",
+                data=html_mockup,
+                file_name="geo_optimised_page.html",
+                mime="text/html",
+                use_container_width=True
+            )
+        
+        # Expandable raw HTML for developers
+        with st.expander("👨‍💻 View Raw HTML (for your developer)"):
+            st.code(html_mockup, language="html")
+
+st.session_state.messages.append({"role": "assistant", "content": display_text})
+st.rerun()
         
         # Parse the scores for the sidebar
         if "||SCORES||" in full_text:
