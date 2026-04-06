@@ -9,6 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 from google import genai
+from google.genai import types
 
 # ============================================================
 # PAGE CONFIG
@@ -32,29 +33,20 @@ DEFAULT_PALETTE = {
     "muted": "#94a3b8",
 }
 
+MODEL_NAME = "gemini-2.5-pro"
+GENERATION_SEED = 42
+
 # ============================================================
 # API KEY / CLIENT
 # ============================================================
 def get_api_key() -> str:
-    """
-    Loads API key in this order:
-    1) Streamlit secrets: st.secrets["API_Key"]
-    2) Environment variable: API_Key
-    3) Environment variable: GEMINI_API_KEY
-    """
     try:
         if "API_Key" in st.secrets:
             return st.secrets["API_Key"]
     except Exception:
         pass
 
-    if os.getenv("API_Key"):
-        return os.getenv("API_Key", "")
-
-    if os.getenv("GEMINI_API_KEY"):
-        return os.getenv("GEMINI_API_KEY", "")
-
-    return ""
+    return os.getenv("API_Key") or os.getenv("GEMINI_API_KEY") or ""
 
 
 API_KEY = get_api_key()
@@ -62,10 +54,7 @@ API_KEY = get_api_key()
 if not API_KEY:
     st.error(
         "No Gemini API key found.\n\n"
-        "Please add it in one of these ways:\n"
-        "1. Streamlit secrets as `API_Key`\n"
-        "2. Environment variable `API_Key`\n"
-        "3. Environment variable `GEMINI_API_KEY`"
+        "Add it in Streamlit secrets as `API_Key`."
     )
     st.stop()
 
@@ -96,11 +85,8 @@ def extract_hex_colours(css_text: str, inline_styles: List[str]) -> List[str]:
 
     for c in colours:
         c = c.lower()
-
-        # Expand shorthand hex: #abc -> #aabbcc
-        if len(c) == 4:
+        if len(c) == 4:  # #abc -> #aabbcc
             c = "#" + "".join(ch * 2 for ch in c[1:])
-
         if c not in seen:
             seen.add(c)
             cleaned.append(c)
@@ -157,12 +143,18 @@ def extract_website_data(url: str) -> Dict[str, Any]:
         if txt:
             headings.append(txt)
 
+    existing_jsonld = []
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        script_text = script.get_text(strip=True)
+        if script_text:
+            existing_jsonld.append(script_text)
+
     # Remove obvious non-content elements
     for element in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
         element.decompose()
 
     page_text = clean_whitespace(soup.get_text(separator=" ", strip=True))
-    page_text = page_text[:25000]  # avoid excessive token usage
+    page_text = page_text[:25000]
 
     return {
         "url": url,
@@ -173,6 +165,7 @@ def extract_website_data(url: str) -> Dict[str, Any]:
         "page_text": page_text,
         "raw_css_excerpt": css_text[:4000],
         "inline_styles_excerpt": inline_styles[:20],
+        "existing_jsonld": existing_jsonld[:10],
         "colours": colours,
         "palette": infer_palette(colours),
     }
@@ -181,9 +174,8 @@ def extract_website_data(url: str) -> Dict[str, Any]:
 def parse_json_from_model(text: str) -> Dict[str, Any]:
     cleaned = text.strip()
 
-    # Remove code fences if model returns markdown
     if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"^```(?:json|html)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
     try:
@@ -216,9 +208,6 @@ def html_looks_valid(html_raw: str) -> bool:
 
 
 def replace_data_needed_boxes(text: str) -> str:
-    """
-    Turns [DATA NEEDED: ...] into styled HTML boxes for fallback rendering.
-    """
     pattern = r"\[DATA NEEDED:(.*?)\]"
 
     def repl(match):
@@ -234,9 +223,6 @@ def replace_data_needed_boxes(text: str) -> str:
 
 
 def markdownish_to_basic_html(text: str) -> str:
-    """
-    Very lightweight converter for fallback rendering if model fails to return HTML.
-    """
     safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     safe = replace_data_needed_boxes(safe)
 
@@ -306,11 +292,7 @@ def build_fallback_html(
       --shadow: 0 20px 60px rgba(0,0,0,0.25);
       --radius: 20px;
     }}
-
-    * {{
-      box-sizing: border-box;
-    }}
-
+    * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
@@ -318,12 +300,10 @@ def build_fallback_html(
       color: var(--text);
       line-height: 1.6;
     }}
-
     .container {{
       width: min(1100px, calc(100% - 32px));
       margin: 0 auto;
     }}
-
     .nav {{
       position: sticky;
       top: 0;
@@ -332,24 +312,20 @@ def build_fallback_html(
       border-bottom: 1px solid rgba(255,255,255,0.08);
       z-index: 20;
     }}
-
     .nav-inner {{
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 18px 0;
     }}
-
     .brand {{
       font-weight: 700;
       font-size: 1.1rem;
       letter-spacing: 0.2px;
     }}
-
     .hero {{
       padding: 72px 0 32px;
     }}
-
     .hero-card {{
       background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
       border: 1px solid rgba(255,255,255,0.08);
@@ -357,7 +333,6 @@ def build_fallback_html(
       box-shadow: var(--shadow);
       padding: 42px;
     }}
-
     .eyebrow {{
       display: inline-block;
       padding: 8px 12px;
@@ -367,21 +342,18 @@ def build_fallback_html(
       font-size: 0.85rem;
       margin-bottom: 14px;
     }}
-
     .hero h1 {{
       font-size: clamp(2rem, 5vw, 3.6rem);
       line-height: 1.05;
       margin: 0 0 16px;
       color: white;
     }}
-
     .hero p {{
       font-size: 1.05rem;
       color: var(--muted);
       max-width: 760px;
       margin: 0 0 24px;
     }}
-
     .cta {{
       display: inline-flex;
       align-items: center;
@@ -394,11 +366,9 @@ def build_fallback_html(
       font-weight: 600;
       box-shadow: 0 10px 30px rgba(99, 102, 241, 0.35);
     }}
-
     .section {{
       padding: 20px 0 32px;
     }}
-
     .content-card {{
       background: var(--surface);
       border: 1px solid rgba(255,255,255,0.08);
@@ -406,36 +376,30 @@ def build_fallback_html(
       padding: 32px;
       box-shadow: var(--shadow);
     }}
-
     h2 {{
       color: white;
       margin-top: 26px;
       margin-bottom: 12px;
       font-size: 1.7rem;
     }}
-
     h3 {{
       color: white;
       margin-top: 20px;
       margin-bottom: 8px;
       font-size: 1.2rem;
     }}
-
     p {{
       margin: 0 0 14px;
       color: var(--text);
     }}
-
     ul {{
       padding-left: 22px;
       margin-top: 8px;
       margin-bottom: 16px;
     }}
-
     li {{
       margin-bottom: 8px;
     }}
-
     .data-needed {{
       border: 2px dashed var(--danger);
       background: var(--danger-bg);
@@ -444,14 +408,12 @@ def build_fallback_html(
       border-radius: 14px;
       margin: 16px 0;
     }}
-
     .footer {{
       padding: 32px 0 56px;
       color: var(--muted);
       text-align: center;
       font-size: 0.95rem;
     }}
-
     @media (max-width: 768px) {{
       .hero-card,
       .content-card {{
@@ -505,7 +467,7 @@ def add_usage_to_session(response: Any):
         st.session_state.total_input_tokens += prompt_tokens
         st.session_state.total_output_tokens += output_tokens
 
-        # Using your original pricing assumptions
+        # Gemini 2.5 Pro pricing assumption from your original app
         st.session_state.total_cost += (
             (prompt_tokens / 1_000_000) * 1.25
             + (output_tokens / 1_000_000) * 10.00
@@ -514,10 +476,30 @@ def add_usage_to_session(response: Any):
         pass
 
 
-def call_gemini(user_text: str, system_instruction: str):
+def call_gemini(
+    user_text: str,
+    system_instruction: str,
+    model_name: str = MODEL_NAME,
+    json_mode: bool = False,
+):
+    cfg = {
+        "temperature": 0,
+        "top_p": 0.1,
+        "top_k": 1,
+        "candidate_count": 1,
+        "max_output_tokens": 8192,
+        "seed": GENERATION_SEED,
+        "system_instruction": system_instruction,
+    }
+
+    if json_mode:
+        cfg["response_mime_type"] = "application/json"
+
+    config = types.GenerateContentConfig(**cfg)
+
     response = client.models.generate_content(
-        model="gemini-2.5-pro",
-        config={"system_instruction": system_instruction},
+        model=model_name,
+        config=config,
         contents=[{"role": "user", "parts": [{"text": user_text}]}],
     )
     return response
@@ -586,23 +568,67 @@ with st.sidebar:
 st.title("🚀 GEO Content Auditor")
 st.write(
     "Paste a **URL** or **text** to audit GEO optimisation, rewrite it for AI search, "
-    "and generate a **visual mock webpage** based on the original site's theme."
+    "generate schema markup, and create a **visual mock webpage** based on the original site's theme."
 )
 
 # ============================================================
-# RENDER PREVIOUS CHAT + VISUAL MOCKUPS
+# RENDER PREVIOUS CHAT + RESULTS
 # ============================================================
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         if msg["role"] == "user":
             st.markdown(msg["content"])
         else:
-            audit_tab, preview_tab, raw_tab = st.tabs(
-                ["📋 Audit", "🌐 Mock Webpage Preview", "👨‍💻 Raw HTML"]
+            audit_tab, schema_tab, preview_tab, raw_tab = st.tabs(
+                ["📋 Audit", "🧩 Schema Markup", "🌐 Mock Webpage Preview", "👨‍💻 Raw HTML"]
             )
 
             with audit_tab:
                 st.markdown(msg["content"])
+
+            with schema_tab:
+                schema = msg.get("schema", {})
+
+                if schema:
+                    st.subheader("Recommended Schema Types")
+                    for item in schema.get("recommended_schema_types", []):
+                        st.write(f"- {item}")
+
+                    st.subheader("Current Schema Issues")
+                    for item in schema.get("current_schema_issues", []):
+                        st.write(f"- {item}")
+
+                    st.subheader("On-Page Improvements Needed")
+                    for item in schema.get("on_page_improvements", []):
+                        st.write(f"- {item}")
+
+                    st.subheader("Missing Data")
+                    for item in schema.get("missing_data", []):
+                        st.write(f"- {item}")
+
+                    st.subheader("Optimised JSON-LD")
+                    schema_pretty = json.dumps(
+                        schema.get("schema_jsonld", {}),
+                        indent=2,
+                        ensure_ascii=False
+                    )
+                    st.code(schema_pretty, language="json")
+
+                    st.download_button(
+                        label="⬇️ Download Schema JSON-LD",
+                        data=schema_pretty,
+                        file_name="optimised_schema.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key=f"schema_download_{idx}",
+                    )
+
+                    if schema.get("implementation_notes"):
+                        st.subheader("Implementation Notes")
+                        for item in schema.get("implementation_notes", []):
+                            st.write(f"- {item}")
+                else:
+                    st.info("No schema markup data available for this result.")
 
             with preview_tab:
                 if msg.get("html"):
@@ -690,6 +716,7 @@ if prompt := st.chat_input("Enter URL (starting with http) or paste website cont
             "page_text": clean_whitespace(prompt)[:25000],
             "raw_css_excerpt": "",
             "inline_styles_excerpt": [],
+            "existing_jsonld": [],
             "colours": [],
             "palette": DEFAULT_PALETTE.copy(),
         }
@@ -758,10 +785,16 @@ Rewrite requirements:
 - Remove vague filler.
 - Add [DATA NEEDED: ...] where specifics are missing.
 - Make the page easier for AI systems to interpret and cite.
+- Return the single best optimised structure, not multiple alternatives.
 """
 
-        with st.status("🧠 Step 1/2 — Auditing and rewriting content..."):
-            analysis_response = call_gemini(ANALYSIS_USER, ANALYSIS_SYSTEM)
+        with st.status("🧠 Step 1/3 — Auditing and rewriting content..."):
+            analysis_response = call_gemini(
+                ANALYSIS_USER,
+                ANALYSIS_SYSTEM,
+                model_name=MODEL_NAME,
+                json_mode=True
+            )
             add_usage_to_session(analysis_response)
             analysis_json = parse_json_from_model(analysis_response.text)
 
@@ -796,7 +829,78 @@ Rewrite requirements:
             display_text += "- No major gaps identified.\n"
 
         # --------------------------------------------------------
-        # STEP 2: GENERATE VISUAL HTML MOCKUP
+        # STEP 1.5: GENERATE SCHEMA MARKUP
+        # --------------------------------------------------------
+        SCHEMA_SYSTEM = """
+You are a structured data and schema markup strategist.
+
+Your task:
+1. Read the page content and any existing JSON-LD.
+2. Identify the most appropriate schema type(s) for the page.
+3. Improve or generate schema markup as JSON-LD.
+4. NEVER invent facts not visible in the page content or existing schema.
+5. If important information is missing, use placeholder strings in this exact format:
+   [DATA NEEDED: short description]
+
+Return VALID JSON ONLY in exactly this structure:
+{
+  "recommended_schema_types": ["..."],
+  "current_schema_issues": ["..."],
+  "on_page_improvements": ["..."],
+  "missing_data": ["..."],
+  "schema_jsonld": {},
+  "implementation_notes": ["..."]
+}
+
+Rules:
+- Only use facts visible in the source content or existing JSON-LD.
+- Prefer JSON-LD using Schema.org vocabulary.
+- If multiple schema blocks are needed, "schema_jsonld" may be a list.
+- Do not output commentary outside JSON.
+"""
+
+        SCHEMA_USER = f"""
+PAGE URL:
+{source_data["url"]}
+
+PAGE TITLE:
+{source_data["title"]}
+
+META DESCRIPTION:
+{source_data["meta_description"]}
+
+HEADINGS:
+{json.dumps(source_data["headings"], ensure_ascii=False)}
+
+VISIBLE PAGE CONTENT:
+{source_data["page_text"]}
+
+EXISTING JSON-LD ON PAGE:
+{json.dumps(source_data["existing_jsonld"], ensure_ascii=False)}
+
+Please:
+- Identify the best schema type(s) for this page.
+- Explain what is wrong or missing in the current schema situation.
+- Suggest on-page content changes needed to support better markup.
+- Output improved schema JSON-LD.
+- Return the single best schema structure, not multiple alternatives.
+"""
+
+        with st.status("🧩 Step 2/3 — Generating schema markup..."):
+            schema_response = call_gemini(
+                SCHEMA_USER,
+                SCHEMA_SYSTEM,
+                model_name=MODEL_NAME,
+                json_mode=True
+            )
+            add_usage_to_session(schema_response)
+            schema_json = parse_json_from_model(schema_response.text)
+
+        if not isinstance(schema_json, dict):
+            schema_json = {}
+
+        # --------------------------------------------------------
+        # STEP 3: GENERATE VISUAL HTML MOCKUP
         # --------------------------------------------------------
         palette = source_data["palette"]
 
@@ -818,6 +922,10 @@ IMPORTANT:
 - Use CSS only.
 - Use system fonts only.
 - The mockup should feel realistic and premium, not like a wireframe.
+- Return the SINGLE BEST OPTIMISED PAGE STRUCTURE.
+- Do NOT explore alternatives.
+- Do NOT vary the layout creatively.
+- Prefer the most commercially clear, AI-readable, and structured design.
 """
 
         HTML_USER = f"""
@@ -876,10 +984,16 @@ HTML REQUIREMENTS:
 - No fake case study numbers
 - No JavaScript
 - Output raw HTML only
+- Return the single best optimised layout only
 """
 
-        with st.status("🎨 Step 2/2 — Building visual mock webpage..."):
-            html_response = call_gemini(HTML_USER, HTML_SYSTEM)
+        with st.status("🎨 Step 3/3 — Building visual mock webpage..."):
+            html_response = call_gemini(
+                HTML_USER,
+                HTML_SYSTEM,
+                model_name=MODEL_NAME,
+                json_mode=False
+            )
             add_usage_to_session(html_response)
             html_raw = clean_html_output(html_response.text)
 
@@ -896,6 +1010,7 @@ HTML REQUIREMENTS:
             "role": "assistant",
             "content": display_text,
             "html": html_raw,
+            "schema": schema_json,
             "audit": {
                 "changes_made": changes_made,
                 "data_gaps": data_gaps,
