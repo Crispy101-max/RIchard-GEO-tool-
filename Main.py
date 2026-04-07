@@ -20,6 +20,8 @@ st.set_page_config(
     layout="wide"
 )
 
+st.info("For deep schema strategy and tailored JSON-LD, use the 'Schema Markup Strategist' page in the sidebar.")
+
 # ============================================================
 # CONSTANTS
 # ============================================================
