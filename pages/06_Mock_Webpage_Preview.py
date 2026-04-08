@@ -1,9 +1,17 @@
 import streamlit as st
-import streamlit.components.v1 as components
-from geo_shared import ensure_geo_context, simple_markdown_to_html, build_mock_html
 
-geo = ensure_geo_context()
+# ------------------------------------------------------------
+# GEO CONTEXT GUARD
+# ------------------------------------------------------------
+if "geo_context" not in st.session_state or "url" not in st.session_state.geo_context:
+    st.warning("Please start the GEO workflow from the Home page first.")
+    st.stop()
 
+geo = st.session_state.geo_context
+
+# ------------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------------
 st.set_page_config(
     page_title="Mock Webpage Preview",
     page_icon="🌐",
@@ -12,35 +20,39 @@ st.set_page_config(
 
 st.title("🌐 Mock Webpage Preview")
 st.write(
-    "Visualise the rewritten content as a clean webpage structure — no manual paste required."
+    "This page visualises the rewritten content as a simple webpage structure."
 )
 
 content = geo.get("rewritten_content", "")
 
 if not content:
-    st.warning("No rewritten content yet. Run the GEO Content Optimiser first.")
+    st.warning("No rewritten content found. Run the GEO Content Optimiser first.")
     st.stop()
 
-html_body = simple_markdown_to_html(content)
+# ------------------------------------------------------------
+# SIMPLE, SAFE PREVIEW (NO HTML / NO COMPONENTS)
+# ------------------------------------------------------------
+st.subheader("🧱 Page Structure Preview")
 
-page_title = geo.get("page_snapshot", {}).get("title", "GEO Mockup")
-html_page = build_mock_html(
-    title=page_title,
-    badge="GEO content structure preview",
-    content_html=html_body
-)
+lines = content.split("\n")
 
-geo["mock_html"] = html_page
+for line in lines:
+    line = line.strip()
+
+    if not line:
+        continue
+
+    if line.startswith("# "):
+        st.header(line.replace("# ", ""))
+    elif line.startswith("## "):
+        st.subheader(line.replace("## ", ""))
+    elif line.startswith("- "):
+        st.markdown(f"- {line[2:]}")
+    else:
+        st.write(line)
+
+# ------------------------------------------------------------
+# SAVE MOCK STATE (OPTIONAL)
+# ------------------------------------------------------------
+geo["mock_html"] = content
 st.session_state.geo_context = geo
-
-st.subheader("🔍 Live Preview")
-components.html(html_page, height=1400, scrolling=True)
-
-st.download_button(
-    "⬇️ Download HTML Mockup",
-    html_page,
-    "geo_mock_webpage.html",
-    "text/html",
-    use_container_width=True
-)
-``
