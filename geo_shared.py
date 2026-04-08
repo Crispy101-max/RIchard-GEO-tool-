@@ -1,6 +1,4 @@
-import os
-import json
-import re
+import osimport re
 from urllib.parse import urlparse
 
 import requests
@@ -19,6 +17,7 @@ def get_api_key():
             return st.secrets["API_Key"]
     except Exception:
         pass
+
     return os.getenv("API_Key") or os.getenv("GEMINI_API_KEY") or ""
 
 
@@ -94,16 +93,21 @@ def fetch_page_snapshot(url):
     }
 
 
-def _clean_model_json(text):
+def parse_model_json(text):
     cleaned = text.strip()
+
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
+
     start = cleaned.find("{")
     end = cleaned.rfind("}")
+
     if start == -1 or end == -1 or end <= start:
         raise ValueError("Model did not return valid JSON.")
-    return json.loads(cleaned[start:end + 1])
+
+    snippet = cleaned[start:end + 1]
+    return json.loads(snippet)
 
 
 def call_gemini_json(client, system_prompt, user_prompt, max_output_tokens=8192):
@@ -121,7 +125,7 @@ def call_gemini_json(client, system_prompt, user_prompt, max_output_tokens=8192)
             response_mime_type="application/json",
         ),
     )
-    return _clean_model_json(response.text)
+    return parse_model_json(response.text)
 
 
 def call_gemini_text(client, system_prompt, user_prompt, max_output_tokens=8192):
@@ -139,54 +143,75 @@ def call_gemini_text(client, system_prompt, user_prompt, max_output_tokens=8192)
         ),
     )
     text = response.text.strip()
+
     if text.startswith("```"):
-        text = re.sub(r"^```(?:html|markdown|md|text)?\s*", "", text)
+        text = re.sub(r"^```(?:html|text|markdown)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
+
     return text.strip()
 
 
+def replace_data_needed_boxes(text):
+    pattern = r"\[DATA NEEDED:(.*?)\]"
+
+    def repl(match):
+        content = match.group(1).strip()
+        return (
+            '<div class="data-needed">'
+            "<strong>DATA NEEDED</strong><br>"
+            f"{content}"
+            "</div>"
+        )
+
+    return re.sub(pattern, repl, text)
+
+
 def simple_markdown_to_html(text):
-    lines = text.strip().split("\n")
-    parts = []
+    safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe = replace_data_needed_boxes(safe)
+
+    lines = safe.split("\n")
+    html_parts = []
 
     for line in lines:
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
             continue
 
-        if line.startswith("### "):
-            parts.append(f"<h3>{line[4:]}</h3>")
-        elif line.startswith("## "):
-            parts.append(f"<h2>{line[3:]}</h2>")
-        elif line.startswith("# "):
-            parts.append(f"<h1>{line[2:]}</h1>")
-        elif line.startswith("- "):
-            parts.append(f"<li>{line[2:]}</li>")
+        if stripped.startswith("### "):
+            html_parts.append(f"<h3>{stripped[4:]}</h3>")
+        elif stripped.startswith("## "):
+            html_parts.append(f"<h2>{stripped[3:]}</h2>")
+        elif stripped.startswith("# "):
+            html_parts.append(f"<h1>{stripped[2:]}</h1>")
+        elif stripped.startswith("- "):
+            html_parts.append(f"<li>{stripped[2:]}</li>")
         else:
-            parts.append(f"<p>{line}</p>")
+            html_parts.append(f"<p>{stripped}</p>")
 
-    final = []
+    final_parts = []
     in_list = False
-    for p in parts:
-        if p.startswith("<li>"):
+
+    for part in html_parts:
+        if part.startswith("<li>"):
             if not in_list:
-                final.append("<ul>")
+                final_parts.append("<ul>")
                 in_list = True
-            final.append(p)
+            final_parts.append(part)
         else:
             if in_list:
-                final.append("</ul>")
+                final_parts.append("</ul>")
                 in_list = False
-            final.append(p)
-    if in_list:
-        final.append("</ul>")
+            final_parts.append(part)
 
-    return "\n".join(final)
+    if in_list:
+        final_parts.append("</ul>")
+
+    return "\n".join(final_parts)
 
 
 def build_mock_html(title, badge, content_html):
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -201,7 +226,7 @@ body {{
     line-height: 1.6;
 }}
 .container {{
-    width: min(980px, calc(100% - 32px));
+    width: min(1100px, calc(100% - 32px));
     margin: 0 auto;
     padding: 32px 0 56px;
 }}
@@ -234,6 +259,14 @@ ul {{
 li {{
     margin-bottom: 8px;
 }}
+.data-needed {{
+    border: 2px dashed #ef4444;
+    background: rgba(239,68,68,.08);
+    color: #fecaca;
+    padding: 16px;
+    border-radius: 14px;
+    margin: 16px 0;
+}}
 footer {{
     margin-top: 24px;
     text-align: center;
@@ -253,3 +286,5 @@ footer {{
 </body>
 </html>
 """
+import json
+
