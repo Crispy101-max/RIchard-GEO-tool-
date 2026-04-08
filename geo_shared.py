@@ -1,4 +1,6 @@
-import osimport re
+import os
+import json
+import re
 from urllib.parse import urlparse
 
 import requests
@@ -6,6 +8,7 @@ import streamlit as st
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+
 
 MODEL_NAME = "gemini-2.5-pro"
 GENERATION_SEED = 42
@@ -142,10 +145,11 @@ def call_gemini_text(client, system_prompt, user_prompt, max_output_tokens=8192)
             system_instruction=system_prompt,
         ),
     )
+
     text = response.text.strip()
 
     if text.startswith("```"):
-        text = re.sub(r"^```(?:html|text|markdown)?\s*", "", text)
+        text = re.sub(r"^```(?:html|markdown|text)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
 
     return text.strip()
@@ -286,5 +290,3 @@ footer {{
 </body>
 </html>
 """
-import json
-
