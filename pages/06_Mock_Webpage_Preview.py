@@ -10,7 +10,7 @@ st.set_page_config(
 
 st.title("🌐 Mock Webpage Preview")
 st.write(
-    "Generate a **real scrollable webpage mockup** from the rewritten GEO content. "
+    "Generate a real scrollable webpage mockup from the rewritten GEO content. "
     "You can preview it, copy the HTML, and download it for client presentation."
 )
 
