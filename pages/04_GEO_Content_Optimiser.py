@@ -3,22 +3,32 @@ from geo_shared import ensure_geo_context, get_client, call_gemini_json
 
 geo = ensure_geo_context()
 
-st.set_page_config(page_title="GEO Content Optimiser", page_icon="✍️", layout="wide")
+st.set_page_config(
+    page_title="GEO Content Optimiser",
+    page_icon="✍️",
+    layout="wide"
+)
+
 st.title("✍️ GEO Content Optimiser")
 st.write(
-    "Rewrite the page so it is clearer, more explicit, and more likely to be recommended for the target AI prompts."
+    "Rewrite the page so it is clearer, more explicit, and more likely to be recommended "
+    "for the target AI prompts."
 )
 
 st.subheader("🎯 Target AI Prompts")
-for p in geo.get("target_prompts", []):
-    st.write(f"- {p}")
+target_prompts = geo.get("target_prompts", [])
+if target_prompts:
+    for p in target_prompts:
+        st.write(f"- {p}")
+else:
+    st.warning("No target prompts found yet. Run Prompt Targeting first.")
 
 run = st.button("Run / Refresh Content Optimiser", type="primary", use_container_width=True)
 
 if run or not geo.get("rewritten_content"):
     client = get_client()
 
-    SYSTEM_PROMPT = """
+    system_prompt = """
 You are a senior Generative Engine Optimisation content strategist.
 
 Rewrite the page so it is easier for AI systems to understand and recommend.
@@ -33,6 +43,7 @@ Rules:
 - Do NOT invent facts
 - Preserve the original meaning and offer
 - Use [DATA NEEDED: ...] where information is missing
+- Return only valid JSON
 
 Return JSON ONLY in this structure:
 {
@@ -44,9 +55,9 @@ Return JSON ONLY in this structure:
 }
 """
 
-    USER_PROMPT = f"""
+    user_prompt = f"""
 COMPANY:
-{geo["company"]}
+{geo.get("company", {})}
 
 TARGET PROMPTS:
 {geo.get("target_prompts", [])}
@@ -58,11 +69,11 @@ ENTITIES:
 {geo.get("entities", {})}
 
 SOURCE PAGE:
-{geo["page_snapshot"]}
+{geo.get("page_snapshot", {})}
 """
 
     with st.spinner("Optimising content..."):
-        result = call_gemini_json(client, SYSTEM_PROMPT, USER_PROMPT)
+        result = call_gemini_json(client, system_prompt, user_prompt)
 
     geo["rewritten_content"] = result.get("rewritten_content", "")
     geo["content_notes"] = result.get("notes", {})
