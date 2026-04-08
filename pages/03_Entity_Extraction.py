@@ -3,22 +3,31 @@ from geo_shared import ensure_geo_context, get_client, call_gemini_json
 
 geo = ensure_geo_context()
 
-st.set_page_config(page_title="Entity Extraction", page_icon="🧠", layout="wide")
+st.set_page_config(
+    page_title="Entity Extraction",
+    page_icon="🧠",
+    layout="wide"
+)
+
 st.title("🧠 Entity Extraction")
 st.write(
     "Identify the entities and relationships required to support the target AI prompts."
 )
 
 st.subheader("🎯 Target AI Prompts")
-for p in geo.get("target_prompts", []):
-    st.write(f"- {p}")
+target_prompts = geo.get("target_prompts", [])
+if target_prompts:
+    for p in target_prompts:
+        st.write(f"- {p}")
+else:
+    st.warning("No target prompts found yet. Run Prompt Targeting first.")
 
 run = st.button("Run / Refresh Entity Extraction", type="primary", use_container_width=True)
 
 if run or not geo.get("entities"):
     client = get_client()
 
-    SYSTEM_PROMPT = """
+    system_prompt = """
 You are a senior entity modeling and knowledge graph specialist.
 
 Extract and evaluate:
@@ -29,6 +38,12 @@ Extract and evaluate:
 - relationship gaps
 
 Optimise for Generative Engine Optimisation.
+
+Rules:
+- Do NOT invent entities
+- Only use entities clearly present or strongly implied in the content
+- Be useful for downstream content optimisation and schema encoding
+- Return only valid JSON
 
 Return JSON ONLY in this structure:
 {
@@ -47,11 +62,13 @@ Return JSON ONLY in this structure:
 }
 """
 
-    source_text = geo.get("rewritten_content") or geo["page_snapshot"]["page_text"]
+    source_text = geo.get("rewritten_content")
+    if not source_text:
+        source_text = geo.get("page_snapshot", {}).get("page_text", "")
 
-    USER_PROMPT = f"""
+    user_prompt = f"""
 COMPANY:
-{geo["company"]}
+{geo.get("company", {})}
 
 TARGET PROMPTS:
 {geo.get("target_prompts", [])}
@@ -64,8 +81,10 @@ SOURCE TEXT:
 """
 
     with st.spinner("Extracting entities..."):
-        geo["entities"] = call_gemini_json(client, SYSTEM_PROMPT, USER_PROMPT)
-        st.session_state.geo_context = geo
+        result = call_gemini_json(client, system_prompt, user_prompt)
+
+    geo["entities"] = result
+    st.session_state.geo_context = geo
 
 entities = geo.get("entities", {})
 
@@ -110,4 +129,3 @@ if entities:
     st.subheader("✅ Priority Entity Actions")
     for item in entities.get("priority_entity_actions", []):
         st.write(f"- {item}")
-``
