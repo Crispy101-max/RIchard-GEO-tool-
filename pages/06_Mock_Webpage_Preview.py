@@ -29,9 +29,15 @@ if "geo_context" not in st.session_state or "url" not in st.session_state.geo_co
 
 geo = st.session_state.geo_context
 
-rewritten_content = geo.get("rewritten_content", "")
+# ============================================================
+# LOAD CONTEXT
+# ============================================================
 company = geo.get("company", {})
 page_snapshot = geo.get("page_snapshot", {})
+rewritten_content = geo.get("rewritten_content", "")
+
+# THIS is the variable that was missing
+page_title_value = page_snapshot.get("title", "GEO Mockup")
 
 if not rewritten_content:
     st.warning("No rewritten content found yet. Run the GEO Content Optimiser first.")
@@ -46,7 +52,6 @@ def get_api_key():
             return st.secrets["API_Key"]
     except Exception:
         pass
-
     return os.getenv("API_Key") or os.getenv("GEMINI_API_KEY") or ""
 
 
@@ -343,7 +348,7 @@ st.write(f"**Industry:** {company.get('industry', '')}")
 st.write(f"**Niche:** {company.get('niche', '')}")
 
 st.subheader("🎯 Source")
-st.write(f"**Page title:** {page_title}")
+st.write(f"**Page title:** {page_title_value}")
 
 generate = st.button("Generate / Refresh Mock Website", type="primary", use_container_width=True)
 
@@ -394,7 +399,7 @@ NICHE:
 {company.get("niche", "")}
 
 PAGE TITLE:
-{page_title}
+{page_title_value}
 
 REWRITTEN CONTENT:
 {rewritten_content}
@@ -423,7 +428,11 @@ Render this into a real, scrollable, realistic HTML website mockup that a client
 
         if not html_looks_valid(html_raw):
             fallback_content = markdownish_to_basic_html(rewritten_content)
-            html_raw = build_fallback_html(page_title, company.get("name", "Brand"), fallback_content)
+            html_raw = build_fallback_html(
+                page_title_value,
+                company.get("name", "Brand"),
+                fallback_content
+            )
 
         geo["mock_html"] = html_raw
         st.session_state.geo_context = geo
@@ -453,3 +462,4 @@ if mock_html:
         "text/html",
         use_container_width=True
     )
+``
