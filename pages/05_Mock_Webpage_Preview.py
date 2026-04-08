@@ -1,4 +1,12 @@
 import streamlit as st
+
+if "geo_context" not in st.session_state or "url" not in st.session_state.geo_context:
+    st.warning("Please initialise a GEO job from the Home page first.")
+    st.stop()
+
+geo = st.session_state.geo_context
+
+import streamlit as st
 import streamlit.components.v1 as components
 import re
 
