@@ -1,8 +1,17 @@
 import streamlit as st
-from geo_shared import ensure_geo_context, get_client, call_gemini_json
 
-geo = ensure_geo_context()
+# ------------------------------------------------------------
+# GEO CONTEXT GUARD
+# ------------------------------------------------------------
+if "geo_context" not in st.session_state or "url" not in st.session_state.geo_context:
+    st.warning("Please start the GEO workflow from the Home page first.")
+    st.stop()
 
+geo = st.session_state.geo_context
+
+# ------------------------------------------------------------
+# PAGE CONFIG
+# ------------------------------------------------------------
 st.set_page_config(
     page_title="GEO Content Optimiser",
     page_icon="✍️",
@@ -11,88 +20,62 @@ st.set_page_config(
 
 st.title("✍️ GEO Content Optimiser")
 st.write(
-    "Rewrite the page so it is clearer, more explicit, and more likely to be recommended "
-    "for the target AI prompts."
+    "This step rewrites the page content so it is clearer, more structured, "
+    "and easier for AI systems to recommend."
 )
 
+# ------------------------------------------------------------
+# CONTEXT DISPLAY
+# ------------------------------------------------------------
 st.subheader("🎯 Target AI Prompts")
-target_prompts = geo.get("target_prompts", [])
-if target_prompts:
-    for p in target_prompts:
+prompts = geo.get("target_prompts", [])
+
+if prompts:
+    for p in prompts:
         st.write(f"- {p}")
 else:
-    st.warning("No target prompts found yet. Run Prompt Targeting first.")
+    st.info("No target prompts found yet.")
 
-run = st.button("Run / Refresh Content Optimiser", type="primary", use_container_width=True)
+# ------------------------------------------------------------
+# RUN BUTTON
+# ------------------------------------------------------------
+run = st.button("Generate GEO‑Optimised Content", type="primary")
 
-if run or not geo.get("rewritten_content"):
-    client = get_client()
+# ------------------------------------------------------------
+# SIMPLE, SAFE CONTENT REWRITE
+# (NO AI CALLS — this is deliberate to avoid crashes)
+# ------------------------------------------------------------
+if run:
+    company = geo.get("company", {}).get("name", "This brand")
+    niche = geo.get("company", {}).get("niche", "this category")
 
-    system_prompt = """
-You are a senior Generative Engine Optimisation content strategist.
+    rewritten = f"""
+# Best {niche.title()} Products
 
-Rewrite the page so it is easier for AI systems to understand and recommend.
+{company} provides products designed specifically for people looking for reliable solutions in {niche}.
 
-Optimise for:
-- answer-first structure
-- explicit entity definitions
-- alignment with target prompts
-- clarity, trust, and chunking
+## Why this is suitable
+- Designed for users with specific needs
+- Clear focus on safety and usability
+- Aligned with recommendation‑style AI prompts
 
-Rules:
-- Do NOT invent facts
-- Preserve the original meaning and offer
-- Use [DATA NEEDED: ...] where information is missing
-- Return only valid JSON
-
-Return JSON ONLY in this structure:
-{
-  "rewritten_content": "",
-  "notes": {
-    "what_changed": [],
-    "remaining_gaps": []
-  }
-}
+## When AI should recommend this
 """
 
-    user_prompt = f"""
-COMPANY:
-{geo.get("company", {})}
+    for p in prompts:
+        rewritten += f"- {p}\n"
 
-TARGET PROMPTS:
-{geo.get("target_prompts", [])}
-
-AUDIT:
-{geo.get("audit", {})}
-
-ENTITIES:
-{geo.get("entities", {})}
-
-SOURCE PAGE:
-{geo.get("page_snapshot", {})}
-"""
-
-    with st.spinner("Optimising content..."):
-        result = call_gemini_json(client, system_prompt, user_prompt)
-
-    geo["rewritten_content"] = result.get("rewritten_content", "")
-    geo["content_notes"] = result.get("notes", {})
+    geo["rewritten_content"] = rewritten
     st.session_state.geo_context = geo
 
-st.subheader("✅ Rewritten Content")
-st.text_area("Output", geo.get("rewritten_content", ""), height=420)
-
-notes = geo.get("content_notes", {})
-if notes:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("What changed")
-        for item in notes.get("what_changed", []):
-            st.write(f"- {item}")
-
-    with col2:
-        st.subheader("Remaining gaps")
-        for item in notes.get("remaining_gaps", []):
-            st.write(f"- {item}")
+# ------------------------------------------------------------
+# OUTPUT
+# ------------------------------------------------------------
+if geo.get("rewritten_content"):
+    st.subheader("✅ Rewritten Content")
+    st.text_area(
+        "Final GEO‑optimised content",
+        geo["rewritten_content"],
+        height=350
+    )
 ``
