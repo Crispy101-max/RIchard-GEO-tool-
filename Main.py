@@ -1,44 +1,73 @@
 import streamlit as st
 
 st.set_page_config(
-    page_title="GEO Workbench",
+    page_title="GEO Workflow",
     page_icon="🚀",
     layout="wide"
 )
 
-st.title("🚀 GEO Workbench")
+st.title("🚀 GEO Optimisation Workflow")
 st.write(
-    "This is a **Generative Engine Optimisation (GEO) toolkit** for analysing, "
-    "rewriting, structuring, and marking up webpages so they are clearer for AI systems, search engines, "
-    "and citation-based discovery."
+    "Run a complete **Generative Engine Optimisation (GEO)** pipeline from a single URL. "
+    "All tools share the same analysis context."
 )
 
-st.markdown("## Available Tools")
-st.markdown("""
-### 📝 GEO Content Optimiser
-Rewrite an existing webpage so it is:
-- easier for AI systems to understand and cite
-- clearer, better structured, and more explicit
-- visualised as a realistic webpage mockup
+# ============================================================
+# INITIALISE SHARED GEO CONTEXT
+# ============================================================
+if "geo_context" not in st.session_state:
+    st.session_state.geo_context = {}
 
-Use this when you want to **improve the actual page copy**.
+# ============================================================
+# INPUTS (ONCE)
+# ============================================================
+st.subheader("1️⃣ Business & Website Input")
 
----
+url = st.text_input("Website URL", placeholder="https://example.com")
 
-### 🧩 Schema Strategy & Optimisation *(coming / separate tool)*
-Analyse and improve structured data (JSON‑LD):
-- clean up existing schema
-- decide what schema is appropriate
-- align schema with page content and business intent
+company_name = st.text_input("Company name")
+industry = st.text_input("Industry / category")
+niche = st.text_input("Niche (e.g. 'sensitive skin care')")
+target_customer = st.text_input("Target customer")
+goal = st.text_area("What do you want AI to recommend or explain?", height=80)
 
-Use this when you want to **improve machine‑readable meaning**.
-
----
-""")
-
-st.info("Use the left sidebar to open each tool.")
-
-st.caption(
-    "This app is designed as a multi‑step GEO workflow. "
-    "Each tool focuses on one job so the system stays clean, powerful, and extensible."
+external_visibility = st.text_area(
+    "External AI visibility metrics (optional)",
+    placeholder="Paste metrics from Profound, Amplitude, etc.",
+    height=100
 )
+
+run = st.button("▶️ Run GEO Workflow", type="primary", use_container_width=True)
+
+# ============================================================
+# RUN WORKFLOW
+# ============================================================
+if run:
+    if not url.startswith("http"):
+        st.error("Please enter a valid URL.")
+        st.stop()
+
+    # Build GEO context once
+    st.session_state.geo_context = {
+        "url": url,
+        "company": {
+            "name": company_name,
+            "industry": industry,
+            "niche": niche,
+            "target_customer": target_customer,
+            "goal": goal,
+        },
+        "external_visibility": external_visibility,
+        "target_prompts": [],
+        "audit": {},
+        "entities": {},
+        "rewritten_content": "",
+        "schema": {},
+        "mock_html": "",
+        "implementation": {}
+    }
+
+    st.success("GEO job initialised ✅")
+    st.info("Use the sidebar to step through Audit → Entities → Content → Schema → Preview → Implementation.")
+
+``
