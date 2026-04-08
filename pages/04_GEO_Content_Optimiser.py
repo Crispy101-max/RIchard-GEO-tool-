@@ -1,17 +1,10 @@
+import json
 import streamlit as st
+from geo_shared import ensure_geo_context, get_client, call_gemini_json
 
-# ------------------------------------------------------------
-# GEO CONTEXT GUARD
-# ------------------------------------------------------------
-if "geo_context" not in st.session_state or "url" not in st.session_state.geo_context:
-    st.warning("Please start the GEO workflow from the Home page first.")
-    st.stop()
-
-geo = st.session_state.geo_context
-
-# ------------------------------------------------------------
+# ============================================================
 # PAGE CONFIG
-# ------------------------------------------------------------
+# ============================================================
 st.set_page_config(
     page_title="GEO Content Optimiser",
     page_icon="✍️",
@@ -20,62 +13,143 @@ st.set_page_config(
 
 st.title("✍️ GEO Content Optimiser")
 st.write(
-    "This step rewrites the page content so it is clearer, more structured, "
-    "and easier for AI systems to recommend."
+    "Rewrite the page so it is clearer, more explicit, and more likely to be recommended "
+    "for the target AI prompts."
 )
 
-# ------------------------------------------------------------
-# CONTEXT DISPLAY
-# ------------------------------------------------------------
+# ============================================================
+# GEO CONTEXT
+# ============================================================
+geo = ensure_geo_context()
+
+# ============================================================
+# LOAD CONTEXT
+# ============================================================
+company = geo.get("company", {})
+target_prompts = geo.get("target_prompts", [])
+audit = geo.get("audit", {})
+entities = geo.get("entities", {})
+snapshot = geo.get("page_snapshot", {})
+
+# ============================================================
+# PAGE HEADER
+# ============================================================
+st.subheader("🏢 Company Context")
+st.write(f"**Company:** {company.get('name', '')}")
+st.write(f"**Industry:** {company.get('industry', '')}")
+st.write(f"**Niche:** {company.get('niche', '')}")
+st.write(f"**Target customer:** {company.get('target_customer', '')}")
+st.write(f"**Goal:** {company.get('goal', '')}")
+
 st.subheader("🎯 Target AI Prompts")
-prompts = geo.get("target_prompts", [])
-
-if prompts:
-    for p in prompts:
-        st.write(f"- {p}")
+if target_prompts:
+    for prompt in target_prompts:
+        st.write(f"- {prompt}")
 else:
-    st.info("No target prompts found yet.")
+    st.warning("No target prompts found yet. Run Prompt Targeting first.")
 
-# ------------------------------------------------------------
-# RUN BUTTON
-# ------------------------------------------------------------
-run = st.button("Generate GEO‑Optimised Content", type="primary")
+st.subheader("📄 Source Page Snapshot")
+st.write(f"**Title:** {snapshot.get('title', '')}")
+st.write(f"**Meta description:** {snapshot.get('meta_description', '')}")
 
-# ------------------------------------------------------------
-# SIMPLE, SAFE CONTENT REWRITE
-# (NO AI CALLS — this is deliberate to avoid crashes)
-# ------------------------------------------------------------
-if run:
-    company = geo.get("company", {}).get("name", "This brand")
-    niche = geo.get("company", {}).get("niche", "this category")
+# ============================================================
+# BUTTON
+# ============================================================
+run = st.button("Run / Refresh Content Optimiser", type="primary", use_container_width=True)
 
-    rewritten = f"""
-# Best {niche.title()} Products
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+SYSTEM_PROMPT = """
+You are a senior Generative Engine Optimisation content strategist.
 
-{company} provides products designed specifically for people looking for reliable solutions in {niche}.
+Rewrite the page so it is easier for AI systems to understand and recommend.
 
-## Why this is suitable
-- Designed for users with specific needs
-- Clear focus on safety and usability
-- Aligned with recommendation‑style AI prompts
+Optimise for:
+- answer-first structure
+- explicit entity definitions
+- alignment with target prompts
+- clarity, trust, and chunking
 
-## When AI should recommend this
+Rules:
+- Do NOT invent facts
+- Preserve the original meaning and offer
+- Use [DATA NEEDED: ...] where information is missing
+- Return only valid JSON
+
+Return JSON ONLY in this structure:
+{
+  "rewritten_content": "",
+  "notes": {
+    "what_changed": [],
+    "remaining_gaps": []
+  }
+}
 """
 
-    for p in prompts:
-        rewritten += f"- {p}\n"
+# ============================================================
+# RUN OPTIMISER
+# ============================================================
+if run or not geo.get("rewritten_content"):
+    client = get_client()
 
-    geo["rewritten_content"] = rewritten
-    st.session_state.geo_context = geo
+    user_prompt = f"""
+COMPANY:
+{json.dumps(company, ensure_ascii=False)}
 
-# ------------------------------------------------------------
-# OUTPUT
-# ------------------------------------------------------------
-if geo.get("rewritten_content"):
+TARGET PROMPTS:
+{json.dumps(target_prompts, ensure_ascii=False)}
+
+AUDIT:
+{json.dumps(audit, ensure_ascii=False)}
+
+ENTITIES:
+{json.dumps(entities, ensure_ascii=False)}
+
+SOURCE PAGE SNAPSHOT:
+{json.dumps(snapshot, ensure_ascii=False)}
+"""
+
+    try:
+        with st.spinner("Optimising content for GEO..."):
+            result = call_gemini_json(client, SYSTEM_PROMPT, user_prompt)
+
+        geo["rewritten_content"] = result.get("rewritten_content", "")
+        geo["content_notes"] = result.get("notes", {})
+        st.session_state.geo_context = geo
+
+        st.success("✅ Rewritten content saved to shared GEO workflow context.")
+
+    except Exception as e:
+        st.error(f"Content optimisation failed: {str(e)}")
+
+# ============================================================
+# DISPLAY OUTPUT
+# ============================================================
+rewritten_content = geo.get("rewritten_content", "")
+content_notes = geo.get("content_notes", {})
+
+if rewritten_content:
     st.subheader("✅ Rewritten Content")
-    st.text_area(
-        "Final GEO‑optimised content",
-        geo["rewritten_content"],
-        height=350
+    st.text_area("Output", rewritten_content, height=420)
+
+    st.download_button(
+        "⬇️ Download Rewritten Content",
+        data=rewritten_content,
+        file_name="geo_rewritten_content.txt",
+        mime="text/plain",
+        use_container_width=True
     )
-``
+
+if content_notes:
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("What changed")
+        for item in content_notes.get("what_changed", []):
+            st.write(f"- {item}")
+
+    with col2:
+        st.subheader("Remaining gaps")
+        for item in content_notes.get("remaining_gaps", []):
+            st.write(f"- {item}")
