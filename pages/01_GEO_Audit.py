@@ -18,17 +18,17 @@ st.set_page_config(
 
 st.title("📋 GEO Audit")
 st.write(
-    "This audit assesses how well a webpage is positioned for **Generative Engine Optimisation (GEO)** — "
-    "including AI readability, entity clarity, citation potential, schema posture, and content gaps."
+    "Assess how well a webpage is positioned for **Generative Engine Optimisation (GEO)**. "
+    "This is a strategic audit — not a rewrite."
 )
 
 # ============================================================
 # API KEY
 # ============================================================
-def get_api_key() -> str:
+def get_api_key():
     if "API_Key" in st.secrets:
         return st.secrets["API_Key"]
-    return os.getenv("API_Key") or os.getenv("GEMINI_API_KEY") or ""
+    return os.getenv("API_Key") or os.getenv("GEMINI_API_KEY")
 
 
 API_KEY = get_api_key()
@@ -42,26 +42,27 @@ MODEL_NAME = "gemini-2.5-pro"
 # ============================================================
 # HELPERS
 # ============================================================
-def clean(text: str) -> str:
+def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
 @st.cache_data(show_spinner=False)
-def fetch_page(url: str):
+def fetch_page(url):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
     r.raise_for_status()
 
     soup = BeautifulSoup(r.text, "html.parser")
 
     title = soup.title.get_text(strip=True) if soup.title else ""
+
     meta_desc = ""
-    m = soup.find("meta", attrs={"name": "description"})
-    if m and m.get("content"):
-        meta_desc = m["content"].strip()
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        meta_desc = meta["content"].strip()
 
     headings = [h.get_text(" ", strip=True) for h in soup.find_all(["h1", "h2", "h3"])]
 
-    existing_schema = [
+    schema_blocks = [
         s.get_text(strip=True)
         for s in soup.find_all("script", type="application/ld+json")
         if s.get_text(strip=True)
@@ -77,23 +78,23 @@ def fetch_page(url: str):
         "meta_description": meta_desc,
         "headings": headings[:25],
         "text": text,
-        "schema": existing_schema[:10],
+        "schema": schema_blocks[:10],
     }
 
 
-def call_gemini(user: str, system: str):
+def call_gemini(user_prompt, system_prompt):
     response = client.models.generate_content(
         model=MODEL_NAME,
+        contents=user_prompt,
         config=types.GenerateContentConfig(
             temperature=0,
             top_p=0.1,
             top_k=1,
             max_output_tokens=8192,
             seed=42,
-            system_instruction=system,
+            system_instruction=system_prompt,
             response_mime_type="application/json",
         ),
-        contents=user,
     )
     return json.loads(response.text)
 
@@ -101,6 +102,12 @@ def call_gemini(user: str, system: str):
 # INPUT
 # ============================================================
 url = st.text_input("Website page URL", placeholder="https://example.com/page")
+
+external_visibility = st.text_area(
+    "External brand visibility signals (optional)",
+    placeholder="Paste metrics from Amplitude, GA4, Profound, etc.",
+    height=120
+)
 
 run = st.button("Run GEO Audit", type="primary", use_container_width=True)
 
@@ -110,52 +117,41 @@ run = st.button("Run GEO Audit", type="primary", use_container_width=True)
 SYSTEM_PROMPT = """
 You are a senior Generative Engine Optimisation (GEO) auditor.
 
-You must assess a webpage across dimensions that influence visibility, understanding,
-and citation by AI systems (LLMs, answer engines, copilots).
+Assess how well the page is positioned for AI understanding and citation.
 
-You are NOT rewriting content.
+Consider:
+- Content structure & clarity
+- Entity definition
+- Knowledge graph readiness
+- Schema posture
+- Citation readiness
+- Real-world brand visibility (if provided)
 
-You are identifying:
-- strengths
-- weaknesses
-- high-impact GEO opportunities
+Do NOT rewrite content.
+Do NOT invent facts.
 
-Assess ALL of the following areas:
-1. AI Readability & Structure
-2. Content Intent & Page Purpose
-3. Entity Definition & Knowledge Graph Alignment
-4. Citation & Source Readiness
-5. Schema Markup Posture (lightweight, advisory)
-6. Content Gaps & Expansion Opportunities
-
-Rules:
-- Do not invent facts
-- Base assessments strictly on visible content
-- Be commercially realistic and conservative
-- Avoid SEO jargon — write for decision-makers
-
-Return JSON ONLY in exactly this structure:
+Return JSON ONLY in this structure:
 
 {
   "overall_summary": "",
   "strengths": [],
   "weaknesses": [],
   "opportunities": [],
+  "visibility_context": {
+    "summary": "",
+    "impact_on_priorities": ""
+  },
   "schema_snapshot": {
     "current_state": "",
     "recommended_focus": []
   },
-  "content_structure_review": {
-    "what_works": [],
-    "what_breaks_ai_understanding": []
-  },
-  "entity_and_knowledge_graph": {
-    "current_entity_clarity": "",
-    "missing_entities_or_relationships": []
+  "entity_readiness": {
+    "assessment": "",
+    "gaps": []
   },
   "citation_readiness": {
-    "likelihood_of_being_cited": "",
-    "missing_supporting_content": []
+    "assessment": "",
+    "gaps": []
   },
   "priority_actions": []
 }
@@ -166,18 +162,18 @@ Return JSON ONLY in exactly this structure:
 # ============================================================
 if run:
     if not url.startswith("http"):
-        st.error("Please enter a valid URL starting with http or https.")
+        st.error("Please enter a valid URL.")
         st.stop()
 
     try:
-        with st.spinner("Fetching webpage..."):
+        with st.spinner("Fetching page..."):
             page = fetch_page(url)
 
         USER_PROMPT = f"""
 URL:
 {url}
 
-PAGE TITLE:
+TITLE:
 {page["title"]}
 
 META DESCRIPTION:
@@ -186,22 +182,22 @@ META DESCRIPTION:
 HEADINGS:
 {json.dumps(page["headings"], ensure_ascii=False)}
 
-VISIBLE PAGE CONTENT:
+PAGE CONTENT:
 {page["text"]}
 
-EXISTING SCHEMA (JSON-LD):
+EXISTING SCHEMA:
 {json.dumps(page["schema"], ensure_ascii=False)}
+
+EXTERNAL VISIBILITY:
+{external_visibility if external_visibility else "None provided"}
 """
 
         with st.spinner("Running GEO audit..."):
             audit = call_gemini(USER_PROMPT, SYSTEM_PROMPT)
 
-        st.success("GEO audit completed")
+        st.success("GEO audit complete")
 
-        # ====================================================
-        # DISPLAY RESULTS
-        # ====================================================
-        st.subheader("🔎 Overall Summary")
+        st.subheader("Overall Summary")
         st.write(audit["overall_summary"])
 
         col1, col2, col3 = st.columns(3)
@@ -223,31 +219,23 @@ EXISTING SCHEMA (JSON-LD):
 
         st.divider()
 
+        st.subheader("📈 Visibility Context")
+        st.write(audit["visibility_context"]["summary"])
+        st.write(audit["visibility_context"]["impact_on_priorities"])
+
         st.subheader("🧩 Schema Snapshot")
-        st.write("**Current state:**", audit["schema_snapshot"]["current_state"])
-        st.write("**Recommended focus:**")
+        st.write(audit["schema_snapshot"]["current_state"])
         for i in audit["schema_snapshot"]["recommended_focus"]:
             st.write(f"- {i}")
 
-        st.subheader("🧱 Content Structure Review")
-        st.write("**What works:**")
-        for i in audit["content_structure_review"]["what_works"]:
+        st.subheader("🧠 Entity Readiness")
+        st.write(audit["entity_readiness"]["assessment"])
+        for i in audit["entity_readiness"]["gaps"]:
             st.write(f"- {i}")
 
-        st.write("**What breaks AI understanding:**")
-        for i in audit["content_structure_review"]["what_breaks_ai_understanding"]:
-            st.write(f"- {i}")
-
-        st.subheader("🧠 Entity & Knowledge Graph Optimisation")
-        st.write(audit["entity_and_knowledge_graph"]["current_entity_clarity"])
-        st.write("**Missing entities / relationships:**")
-        for i in audit["entity_and_knowledge_graph"]["missing_entities_or_relationships"]:
-            st.write(f"- {i}")
-
-        st.subheader("📚 Citation & Source Readiness")
-        st.write(audit["citation_readiness"]["likelihood_of_being_cited"])
-        st.write("**Missing supporting content:**")
-        for i in audit["citation_readiness"]["missing_supporting_content"]:
+        st.subheader("📚 Citation Readiness")
+        st.write(audit["citation_readiness"]["assessment"])
+        for i in audit["citation_readiness"]["gaps"]:
             st.write(f"- {i}")
 
         st.subheader("✅ Priority Actions")
@@ -256,12 +244,11 @@ EXISTING SCHEMA (JSON-LD):
 
         st.download_button(
             "⬇️ Download GEO Audit (JSON)",
-            data=json.dumps(audit, indent=2),
-            file_name="geo_audit.json",
-            mime="application/json",
+            json.dumps(audit, indent=2),
+            "geo_audit.json",
+            "application/json",
             use_container_width=True,
         )
 
     except Exception as e:
         st.error(f"Audit failed: {str(e)}")
-``
