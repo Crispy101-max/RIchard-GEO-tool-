@@ -2,9 +2,6 @@ import json
 import streamlit as st
 from geo_shared import ensure_geo_context, get_client, call_gemini_json
 
-# ============================================================
-# PAGE CONFIG
-# ============================================================
 st.set_page_config(
     page_title="GEO Content Optimiser",
     page_icon="✍️",
@@ -17,23 +14,14 @@ st.write(
     "for the target AI prompts."
 )
 
-# ============================================================
-# GEO CONTEXT
-# ============================================================
 geo = ensure_geo_context()
 
-# ============================================================
-# LOAD CONTEXT
-# ============================================================
 company = geo.get("company", {})
 target_prompts = geo.get("target_prompts", [])
 audit = geo.get("audit", {})
 entities = geo.get("entities", {})
 snapshot = geo.get("page_snapshot", {})
 
-# ============================================================
-# PAGE HEADER
-# ============================================================
 st.subheader("🏢 Company Context")
 st.write(f"**Company:** {company.get('name', '')}")
 st.write(f"**Industry:** {company.get('industry', '')}")
@@ -52,14 +40,8 @@ st.subheader("📄 Source Page Snapshot")
 st.write(f"**Title:** {snapshot.get('title', '')}")
 st.write(f"**Meta description:** {snapshot.get('meta_description', '')}")
 
-# ============================================================
-# BUTTON
-# ============================================================
 run = st.button("Run / Refresh Content Optimiser", type="primary", use_container_width=True)
 
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
 SYSTEM_PROMPT = """
 You are a senior Generative Engine Optimisation content strategist.
 
@@ -87,9 +69,6 @@ Return JSON ONLY in this structure:
 }
 """
 
-# ============================================================
-# RUN OPTIMISER
-# ============================================================
 if run or not geo.get("rewritten_content"):
     client = get_client()
 
@@ -119,13 +98,9 @@ SOURCE PAGE SNAPSHOT:
         st.session_state.geo_context = geo
 
         st.success("✅ Rewritten content saved to shared GEO workflow context.")
-
     except Exception as e:
         st.error(f"Content optimisation failed: {str(e)}")
 
-# ============================================================
-# DISPLAY OUTPUT
-# ============================================================
 rewritten_content = geo.get("rewritten_content", "")
 content_notes = geo.get("content_notes", {})
 
